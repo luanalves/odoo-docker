@@ -54,6 +54,26 @@ class SchemaValidator:
         },
     }
 
+    # Feature 026: agent invite schema — paridade total com AGENT_CREATE_SCHEMA,
+    # exceto company_id/user_id (sempre derivados no servidor, ver invite_controller.py)
+    AGENT_INVITE_SCHEMA = {
+        "required": [],
+        "optional": [
+            "name",
+            "cpf",
+            "email",
+            "phone",
+            "mobile",
+            "creci",
+            "hire_date",
+            "bank_name",
+            "bank_account",
+            "pix_key",
+        ],
+        "types": AGENT_CREATE_SCHEMA["types"],
+        "constraints": AGENT_CREATE_SCHEMA["constraints"],
+    }
+
     # Agent update schema
     AGENT_UPDATE_SCHEMA = {
         "required": [],
@@ -385,6 +405,13 @@ class SchemaValidator:
         """Validate agent creation request."""
         return SchemaValidator.validate_request(
             data, SchemaValidator.AGENT_CREATE_SCHEMA
+        )
+
+    @staticmethod
+    def validate_agent_invite(data):
+        """Validate the optional 'agent' object inside POST /api/v1/users/invite. Feature 026."""
+        return SchemaValidator.validate_request(
+            data, SchemaValidator.AGENT_INVITE_SCHEMA
         )
 
     @staticmethod

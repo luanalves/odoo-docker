@@ -85,6 +85,7 @@ class RealEstateAgent(models.Model):
         "res.users",
         "Related User",
         ondelete="restrict",
+        index=True,
         help="Link to user account if agent has system access",
     )
 

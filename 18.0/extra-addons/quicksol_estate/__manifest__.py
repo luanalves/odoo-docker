@@ -1,6 +1,6 @@
 {
     "name": "Real Estate Management - Kenlo Imóveis Edition",
-    "version": "18.0.5.0.0",  # Feature 020: RBAC Capabilities API
+    "version": "18.0.6.0.0",  # Feature 026: user_id index for agent invite RBAC
     "category": "Real Estate",
     "summary": "Complete property management system following Kenlo Imóveis standards with RBAC",
     "description": """

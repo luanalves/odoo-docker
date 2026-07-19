@@ -1,9 +1,24 @@
 # -*- coding: utf-8 -*-
-from odoo.tests.common import TransactionCase
-from odoo.addons.quicksol_estate.controllers.utils.schema import SchemaValidator
+"""
+Pure unittest.TestCase for Feature 026 — SchemaValidator.validate_agent_invite.
+
+No Odoo environment/database required: SchemaValidator is a pure static
+validator, imported directly via the same odoo.addons.__path__ extension
+trick used by run_unit_tests.py.
+"""
+import unittest
+from pathlib import Path
+
+import odoo.addons
+
+_addons_root = str(Path(__file__).parent.parent.parent.parent)  # /mnt/extra-addons
+if _addons_root not in odoo.addons.__path__:
+    odoo.addons.__path__.insert(0, _addons_root)
+
+from odoo.addons.quicksol_estate.controllers.utils.schema import SchemaValidator  # noqa: E402
 
 
-class TestSchemaAgentInvite(TransactionCase):
+class TestSchemaAgentInvite(unittest.TestCase):
     def test_full_field_parity_payload_is_valid(self):
         """Paridade total: todos os 10 campos de AGENT_CREATE_SCHEMA (menos company_id) são aceitos"""
         payload = {
@@ -66,3 +81,7 @@ class TestSchemaAgentInvite(TransactionCase):
             SchemaValidator.AGENT_INVITE_SCHEMA["constraints"],
             SchemaValidator.AGENT_CREATE_SCHEMA["constraints"],
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

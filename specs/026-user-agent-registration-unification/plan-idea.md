@@ -18,7 +18,10 @@
 - **`profile_id` continua obrigatório** em `POST /api/v1/users/invite` — este plano NÃO introduz criação de perfil inline (decisão confirmada com o usuário).
 - **`.claude/rules/git-workflow.md`**: nenhum merge em `develop`/`master` sem autorização explícita do usuário — vale para TODOS os commits deste plano, mesmo que a branch de feature seja mesclada depois.
 - **Comando de upgrade de módulo** (verificado em specs anteriores deste repo): `docker compose exec odoo odoo -d realestate -u <módulo> --stop-after-init` (a partir de `18.0/`).
-- **Comando de teste unitário**: `docker compose exec odoo odoo -d realestate --test-tags /<módulo>:<NomeDaClasse> --test-enable --stop-after-init` (a partir de `18.0/`).
+- **Convenção de testes CORRIGIDA (2026-07-19, achado em execução — `--test-tags /<módulo>:<Classe>` NÃO funciona neste ambiente, confirmado empiricamente contra classes já existentes)**: este projeto tem exatamente dois caminhos válidos, roteados por `scripts/validate_coverage.sh` (fonte de verdade, leia antes de escrever qualquer teste novo):
+  1. **Lógica pura, sem `self.env`/DB** (ex.: validação de schema, funções utilitárias): arquivo em `tests/unit/`, sufixo obrigatório `_unit.py` (ex.: `test_algo_unit.py`), classe `unittest.TestCase` (NÃO `TransactionCase`), importando o módulo via o truque de path já usado em `tests/unit/run_unit_tests.py` (`odoo.addons.__path__.insert(0, "/mnt/extra-addons")` seguido de `from odoo.addons.quicksol_estate.X import Y`). Executado via `docker compose exec odoo python3 /mnt/extra-addons/quicksol_estate/tests/unit/run_unit_tests.py` (a partir de `18.0/`) — nenhum processo Odoo/DB é iniciado, é só Python puro.
+  2. **Qualquer coisa que precise de `self.env`/DB** (registros ORM reais, constraints, etc.): arquivo em `tests/integration/`, classe `TransactionCase`, **com um `from . import nome_do_arquivo` adicionado em `tests/integration/__init__.py`** (Odoo só descobre testes explicitamente importados na cadeia de `tests/__init__.py` — arquivos não importados são invisíveis para o test runner, mesmo usando `TransactionCase`). Executado via `docker compose exec odoo odoo -d realestate -u quicksol_estate --test-enable --stop-after-init --log-level=test --http-port=8988` (a partir de `18.0/`, porta alternativa para não colidir com o `odoo18` já rodando) — **nunca usar `--test-tags`, rodar o módulo inteiro** e conferir que a saída NÃO contém a string `"0 tests"` (se contiver, o teste não foi de fato descoberto — sintoma exato que `validate_coverage.sh` já verifica).
+- **Verificação pendente antes da Task 4**: os scripts curl deste plano assumem `TEST_USER_MANAGER`/`TEST_PASSWORD_MANAGER` em `18.0/.env` (só `TEST_USER_OWNER`/`TEST_PASSWORD_OWNER` foram confirmados existir, em outro script já existente). Antes de rodar a Task 4, confirmar com `grep TEST_USER_MANAGER 18.0/.env` — se não existir, usar `TEST_USER_OWNER`/`TEST_PASSWORD_OWNER` nos scripts (Owner também está autorizado a convidar `agent` pela matriz ADR-024) ou criar o usuário de teste correspondente.
 - **Verificação pendente antes da Task 4**: os scripts curl deste plano assumem `TEST_USER_MANAGER`/`TEST_PASSWORD_MANAGER` em `18.0/.env` (só `TEST_USER_OWNER`/`TEST_PASSWORD_OWNER` foram confirmados existir, em outro script já existente). Antes de rodar a Task 4, confirmar com `grep TEST_USER_MANAGER 18.0/.env` — se não existir, usar `TEST_USER_OWNER`/`TEST_PASSWORD_OWNER` nos scripts (Owner também está autorizado a convidar `agent` pela matriz ADR-024) ou criar o usuário de teste correspondente.
 
 ---
@@ -334,7 +337,8 @@ git commit -m "feat(quicksol_estate): add AGENT_INVITE_SCHEMA reusing AGENT_CREA
 Esta tarefa NÃO altera código de produção — `real.estate.agent.create()` (linhas 436-470) já implementa o fallback via `setdefault()`. O objetivo é ter uma rede de segurança de regressão ANTES de conectar o controller a esse mecanismo na Task 4, provando que ele funciona exatamente como a Task 4 vai assumir.
 
 **Arquivos:**
-- Teste: `18.0/extra-addons/quicksol_estate/tests/unit/test_agent_create_from_profile_and_user.py`
+- Teste: `18.0/extra-addons/quicksol_estate/tests/integration/test_agent_create_from_profile_and_user.py` (NÃO em `tests/unit/` — esta classe usa `self.env`/DB, e precisa de `TransactionCase` real; `tests/unit/` deste projeto é reservado para `unittest.TestCase` puro, sem Odoo/DB, ver Restrições Globais)
+- Modificar: `18.0/extra-addons/quicksol_estate/tests/integration/__init__.py` (adicionar `from . import test_agent_create_from_profile_and_user` — sem esse import explícito, o Odoo nunca descobre o arquivo, mesmo sendo `TransactionCase`)
 
 **Interfaces:**
 - Consome: `real.estate.agent.create()` (já existente, `agent.py:436-470`), `thedevkitchen.estate.profile` (já existente).
@@ -343,7 +347,7 @@ Esta tarefa NÃO altera código de produção — `real.estate.agent.create()` (
 - [ ] **Passo 1: Escrever os testes de caracterização (devem passar imediatamente, sem mudança de código)**
 
 ```python
-# 18.0/extra-addons/quicksol_estate/tests/unit/test_agent_create_from_profile_and_user.py
+# 18.0/extra-addons/quicksol_estate/tests/integration/test_agent_create_from_profile_and_user.py
 # -*- coding: utf-8 -*-
 from odoo.tests.common import TransactionCase
 
@@ -422,18 +426,28 @@ class TestAgentCreateFromProfileAndUser(TransactionCase):
         )
 ```
 
-- [ ] **Passo 2: Rodar os testes e confirmar que PASSAM imediatamente (caracterização, não TDD-de-código-novo)**
+- [ ] **Passo 2: Adicionar o import explícito em `tests/integration/__init__.py`**
+
+Abrir `18.0/extra-addons/quicksol_estate/tests/integration/__init__.py` e adicionar, junto aos demais imports já existentes (ex.: perto de `from . import test_event_bus_integration`):
+```python
+from . import test_agent_create_from_profile_and_user
+```
+
+- [ ] **Passo 3: Rodar os testes e confirmar que PASSAM imediatamente (caracterização, não TDD-de-código-novo)**
 
 ```
 cd 18.0
-docker compose exec odoo odoo -d realestate --test-tags /quicksol_estate:TestAgentCreateFromProfileAndUser --test-enable --stop-after-init
+docker compose exec odoo odoo -d realestate -u quicksol_estate --test-enable --stop-after-init --log-level=test --http-port=8988 2>&1 | tee /tmp/task3_test.log
+grep -c "0 tests" /tmp/task3_test.log  # deve ser 0 (ou seja, a string "0 tests" NÃO deve aparecer)
+grep "tests when loading" /tmp/task3_test.log  # confirma "0 failed, 0 error(s) of N tests" com N > 0
 ```
-Esperado: PASSA (4 testes) já na primeira execução — isso confirma que o mecanismo de `agent.py:436-470` funciona exatamente como a Task 4 vai assumir. **Se qualquer um destes testes falhar aqui, PARE** — significa que a premissa da Task 4 (reaproveitar esse mecanismo sem duplicá-lo) está incorreta para o estado atual do código, e a Task 4 precisa ser redesenhada antes de prosseguir.
+Esperado: PASSA já na primeira execução, e a contagem de testes (`N tests`) aumenta em 4 em relação à execução da mesma linha antes deste passo (rode uma vez antes de escrever o teste para ter a contagem-base, se quiser confirmar que os 4 novos foram de fato descobertos) — isso confirma que o mecanismo de `agent.py:436-470` funciona exatamente como a Task 4 vai assumir. **Se qualquer um destes testes falhar aqui, PARE** — significa que a premissa da Task 4 (reaproveitar esse mecanismo sem duplicá-lo) está incorreta para o estado atual do código, e a Task 4 precisa ser redesenhada antes de prosseguir. **Se a string "0 tests" aparecer**, o import do Passo 2 não foi aplicado corretamente — conferir antes de qualquer outra coisa.
 
-- [ ] **Passo 3: Commit**
+- [ ] **Passo 4: Commit**
 
 ```bash
-git add 18.0/extra-addons/quicksol_estate/tests/unit/test_agent_create_from_profile_and_user.py
+git add 18.0/extra-addons/quicksol_estate/tests/integration/test_agent_create_from_profile_and_user.py \
+        18.0/extra-addons/quicksol_estate/tests/integration/__init__.py
 git commit -m "test(quicksol_estate): characterize agent.create() profile/user setdefault mechanism"
 ```
 

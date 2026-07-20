@@ -558,7 +558,7 @@ PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profi
 PROFILE_BODY=$(echo "$PROFILE_RESPONSE" | sed '$d')
 PROFILE_STATUS=$(echo "$PROFILE_RESPONSE" | tail -n 1)
 assert_status "201" "$PROFILE_STATUS" "profile creation"
-PROFILE_ID=$(echo "$PROFILE_BODY" | jq -r '.data.id')
+PROFILE_ID=$(echo "$PROFILE_BODY" | jq -r '.id')
 
 # --- Confirma a premissa do achado: profile_api.py já criou um real_estate_agent órfão ---
 PRE_EXISTING_COUNT=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
@@ -764,7 +764,7 @@ git commit -m "feat(thedevkitchen_user_onboarding): link/create real.estate.agen
 BAD_CRECI_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Bad Creci","company_id":'"${COMPANY_ID}"',"document":"52998224725","email":"us026_bad_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_RESPONSE" | sed '$d' | jq -r '.data.id')
+BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_RESPONSE" | sed '$d' | jq -r '.id')
 
 INVALID_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
@@ -790,7 +790,7 @@ fi
 DUP_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Dup Creci","company_id":'"${COMPANY_ID}"',"document":"91129418804","email":"us026_dup_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-DUP_PROFILE_ID=$(echo "$DUP_PROFILE_RESPONSE" | jq -r '.data.id')
+DUP_PROFILE_ID=$(echo "$DUP_PROFILE_RESPONSE" | jq -r '.id')
 
 FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
@@ -799,7 +799,7 @@ FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" \
 DUP_PROFILE2_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Dup Creci 2","company_id":'"${COMPANY_ID}"',"document":"15350946056","email":"us026_dup_creci_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-DUP_PROFILE2_ID=$(echo "$DUP_PROFILE2_RESPONSE" | jq -r '.data.id')
+DUP_PROFILE2_ID=$(echo "$DUP_PROFILE2_RESPONSE" | jq -r '.id')
 
 DUP_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
@@ -811,7 +811,7 @@ assert_status "409" "$DUP_INVITE_STATUS" "duplicate creci in same company return
 SPOOF_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Spoof Test","company_id":'"${COMPANY_ID}"',"document":"74954510736","email":"us026_spoof@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-SPOOF_PROFILE_ID=$(echo "$SPOOF_PROFILE_RESPONSE" | jq -r '.data.id')
+SPOOF_PROFILE_ID=$(echo "$SPOOF_PROFILE_RESPONSE" | jq -r '.id')
 
 SPOOF_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
@@ -904,7 +904,7 @@ AGENT_PROFILE_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.
 # 1. Cria profile + convite
 PROFILE_ID=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 RBAC Agent","company_id":'"${COMPANY_ID}"',"document":"60011239301","email":"us026_rbac_agent@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}' \
-  | jq -r '.data.id')
+  | jq -r '.id')
 INVITE_BODY=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"profile_id":'"${PROFILE_ID}"',"agent":{"creci":"CRECI-SP 888888"}}')
 NEW_USER_ID=$(echo "$INVITE_BODY" | jq -r '.data.id')
@@ -1007,7 +1007,7 @@ AGENT_PROFILE_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.
 
 PROFILE_ID=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Resend Agent","company_id":'"${COMPANY_ID}"',"document":"88817915058","email":"us026_resend_agent@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}' \
-  | jq -r '.data.id')
+  | jq -r '.id')
 FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"profile_id":'"${PROFILE_ID}"',"agent":{"creci":"CRECI-SP 444444"}}')
 USER_ID=$(echo "$FIRST_INVITE" | jq -r '.data.id')

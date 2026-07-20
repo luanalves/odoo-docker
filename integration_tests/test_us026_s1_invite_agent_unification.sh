@@ -185,7 +185,10 @@ fi
 BAD_CRECI_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Bad Creci","company_id":'"${COMPANY_ID}"',"document":"52998224725","email":"us026_bad_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_RESPONSE" | sed '$d' | jq -r '.id')
+BAD_CRECI_PROFILE_BODY=$(echo "$BAD_CRECI_RESPONSE" | sed '$d')
+BAD_CRECI_PROFILE_STATUS=$(echo "$BAD_CRECI_RESPONSE" | tail -n 1)
+assert_status "201" "$BAD_CRECI_PROFILE_STATUS" "profile creation for bad creci scenario"
+BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_PROFILE_BODY" | jq -r '.id')
 
 INVALID_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
@@ -214,19 +217,27 @@ fi
 # on document validation before ever reaching the invite step. Replaced with
 # freshly generated, checksum-valid CPFs (confirmed cpf.validate()==True and no
 # collision with any existing profile under this test's company_id).
-DUP_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
+DUP_PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Dup Creci","company_id":'"${COMPANY_ID}"',"document":"15350946056","email":"us026_dup_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-DUP_PROFILE_ID=$(echo "$DUP_PROFILE_RESPONSE" | jq -r '.id')
+DUP_PROFILE_BODY=$(echo "$DUP_PROFILE_RESPONSE" | sed '$d')
+DUP_PROFILE_STATUS=$(echo "$DUP_PROFILE_RESPONSE" | tail -n 1)
+assert_status "201" "$DUP_PROFILE_STATUS" "profile creation for duplicate creci scenario (profile 1)"
+DUP_PROFILE_ID=$(echo "$DUP_PROFILE_BODY" | jq -r '.id')
 
-FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" \
+FIRST_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"profile_id":'"${DUP_PROFILE_ID}"',"agent":{"creci":"CRECI-SP 555555"}}')
+FIRST_INVITE_STATUS=$(echo "$FIRST_INVITE" | tail -n 1)
+assert_status "201" "$FIRST_INVITE_STATUS" "first invite establishes creci"
 
-DUP_PROFILE2_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
+DUP_PROFILE2_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Dup Creci 2","company_id":'"${COMPANY_ID}"',"document":"10433218100","email":"us026_dup_creci_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-DUP_PROFILE2_ID=$(echo "$DUP_PROFILE2_RESPONSE" | jq -r '.id')
+DUP_PROFILE2_BODY=$(echo "$DUP_PROFILE2_RESPONSE" | sed '$d')
+DUP_PROFILE2_STATUS=$(echo "$DUP_PROFILE2_RESPONSE" | tail -n 1)
+assert_status "201" "$DUP_PROFILE2_STATUS" "profile creation for duplicate creci scenario (profile 2)"
+DUP_PROFILE2_ID=$(echo "$DUP_PROFILE2_BODY" | jq -r '.id')
 
 DUP_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
@@ -234,13 +245,35 @@ DUP_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invit
 DUP_INVITE_STATUS=$(echo "$DUP_INVITE" | tail -n 1)
 assert_status "409" "$DUP_INVITE_STATUS" "duplicate creci in same company returns 409"
 
+# Atomicidade (FR2.2): profile 2's invite created a res.users row (create_user_from_profile
+# succeeded) BEFORE _upsert_agent_for_invite's write() tripped the company-scoped CRECI
+# uniqueness constraint in agent.py's _check_creci_format -- this is the scenario that
+# actually exercises invite_controller.py's request.env.cr.rollback() (unlike the "bad
+# creci" scenario above, which fails schema validation before any res.users row is ever
+# created, so its atomicity check passes trivially and would not catch a deleted rollback).
+DUP_ATOMIC_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT COUNT(*) FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_dup_creci_2@example.com';")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$(echo "$DUP_ATOMIC_CHECK" | tr -d '[:space:]')" = "0" ]; then
+  echo "PASS: atomic rollback — no orphaned res.users left for profile 2 despite create_user_from_profile succeeding before the CRECI constraint fired"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: atomic rollback — a res.users row exists for profile 2 despite the 409 (got count: $DUP_ATOMIC_CHECK)"
+  echo "  ACTION IF THIS FAILS: confirm request.env.cr.rollback() is still called in"
+  echo "  invite_controller.py's except ValidationError block around _upsert_agent_for_invite."
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
 # --- Cenário: cliente envia company_id/user_id no nó agent -> ignorados silenciosamente ---
 # NOTE: brief's original CPF (74954510736) is also checksum-invalid, replaced for the
 # same reason as above (96001338914, confirmed valid and non-colliding).
-SPOOF_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
+SPOOF_PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Spoof Test","company_id":'"${COMPANY_ID}"',"document":"96001338914","email":"us026_spoof@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-SPOOF_PROFILE_ID=$(echo "$SPOOF_PROFILE_RESPONSE" | jq -r '.id')
+SPOOF_PROFILE_BODY=$(echo "$SPOOF_PROFILE_RESPONSE" | sed '$d')
+SPOOF_PROFILE_STATUS=$(echo "$SPOOF_PROFILE_RESPONSE" | tail -n 1)
+assert_status "201" "$SPOOF_PROFILE_STATUS" "profile creation for spoofing scenario"
+SPOOF_PROFILE_ID=$(echo "$SPOOF_PROFILE_BODY" | jq -r '.id')
 
 SPOOF_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
@@ -249,6 +282,7 @@ SPOOF_STATUS=$(echo "$SPOOF_INVITE" | tail -n 1)
 assert_status "201" "$SPOOF_STATUS" "company_id/user_id in agent node do not cause a 400"
 
 SPOOF_AGENT_ID=$(echo "$SPOOF_INVITE" | sed '$d' | jq -r '.data.agent_id')
+SPOOF_USER_ID=$(echo "$SPOOF_INVITE" | sed '$d' | jq -r '.data.id')
 SPOOF_DB_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
   "SELECT company_id FROM real_estate_agent WHERE id = ${SPOOF_AGENT_ID};")
 TESTS_RUN=$((TESTS_RUN + 1))
@@ -257,6 +291,20 @@ if [ "$(echo "$SPOOF_DB_CHECK" | tr -d '[:space:]')" = "${COMPANY_ID}" ]; then
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
   echo "FAIL: company_id spoofing NOT blocked (got: $SPOOF_DB_CHECK, expected ${COMPANY_ID})"
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# --- Parallel check (Minor finding #2): user_id in the agent node must also be ignored,
+# not just company_id -- persisted user_id must match the real invited user (SPOOF_USER_ID,
+# from the invite response's .data.id), not the spoofed 999999 ---
+SPOOF_USER_ID_DB_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT user_id FROM real_estate_agent WHERE id = ${SPOOF_AGENT_ID};")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$(echo "$SPOOF_USER_ID_DB_CHECK" | tr -d '[:space:]')" = "${SPOOF_USER_ID}" ]; then
+  echo "PASS: spoofed user_id (999999) ignored, real invited user_id (${SPOOF_USER_ID}) persisted"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: user_id spoofing NOT blocked (got: $SPOOF_USER_ID_DB_CHECK, expected ${SPOOF_USER_ID})"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 

@@ -29,29 +29,41 @@
 - `X-Company-Id: {company_id}`
 
 **Required Fields:**
-- `name`: Full name of the user (string)
-- `email`: Email address (RFC 5322 validated, string)
-- `profile`: RBAC profile (one of: owner, manager, agent, prospector, receptionist, financial, inspector, maintenance, portal)
+- `profile_id`: ID of the target thedevkitchen.estate.profile record (integer)
 
-**Optional Fields (portal profile only):**
-- `cpf`: Brazilian CPF number (validated, string)
-- `phone`: Phone number (string)
+**Optional Fields (agent profile only):**
+- `agent`: Nested object for agent-specific fields (CRECI, bank details, hire date, etc.). Only used when target profile type is 'agent'. company_id and user_id are always server-derived, never accepted in this object.
 
 **Error Responses:**
-- **400 Bad Request**: Invalid email, missing fields, invalid profile, duplicate email, invalid CPF
+- **400 Bad Request**: Invalid profile_id, missing fields, invalid agent data
 - **403 Forbidden**: Caller not authorized to invite target profile
-- **409 Conflict**: User with this email already exists</field>
+- **409 Conflict**: User with this email already exists
+
+Feature 026: when the target profile's type is 'agent', an optional nested 'agent' object may be supplied with CRECI/bank/identity fields mirroring POST /api/v1/agents' full field set. company_id and user_id are never accepted in this object — always derived server-side. On success, the response includes agent_id and a 'links.agent' HATEOAS entry.</field>
             <field name="request_schema"><![CDATA[
 {
   "type": "object",
   "title": "InviteUserRequest",
-  "required": ["name", "email", "profile"],
+  "required": ["profile_id"],
   "properties": {
-    "name":    {"type": "string", "example": "João Silva"},
-    "email":   {"type": "string", "format": "email", "example": "joao.silva@example.com"},
-    "profile": {"type": "string", "enum": ["owner", "manager", "agent", "prospector", "receptionist", "financial", "inspector", "maintenance", "portal"], "example": "agent"},
-    "cpf":     {"type": "string", "example": "123.456.789-09"},
-    "phone":   {"type": "string", "example": "+55 11 99999-9999"}
+    "profile_id": {"type": "integer", "example": 17, "description": "ID of an existing thedevkitchen.estate.profile record"},
+    "agent": {
+      "type": "object",
+      "title": "AgentInviteExtra",
+      "description": "Optional. Only used when the target profile's type is 'agent'. Mirrors AGENT_CREATE_SCHEMA's full field set except company_id/user_id (always server-derived).",
+      "properties": {
+        "name":         {"type": "string", "example": "Jane Agent"},
+        "cpf":          {"type": "string", "example": "12345678901"},
+        "email":        {"type": "string", "format": "email", "example": "jane@example.com"},
+        "phone":        {"type": "string", "example": "1130000000"},
+        "mobile":       {"type": "string", "example": "11999998888"},
+        "creci":        {"type": "string", "example": "CRECI-SP 12345"},
+        "hire_date":    {"type": "string", "format": "date", "example": "2026-01-15"},
+        "bank_name":    {"type": "string", "example": "Banco do Brasil"},
+        "bank_account": {"type": "string", "example": "12345-6"},
+        "pix_key":      {"type": "string", "example": "jane@example.com"}
+      }
+    }
   }
 }
 ]]></field>

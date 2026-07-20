@@ -14,6 +14,13 @@
 # user_id) -- a busca acima não encontraria nada, domain viraria
 # ('id', '=', False), e GET /properties retornaria lista vazia mesmo
 # com um imóvel de fato atribuído a esse agente.
+#
+# FR6.1 (spec-idea.md): todo consumidor existente de agent_id.user_id deve
+# ser exercitado por pelo menos um teste E2E usando um agente criado através
+# do fluxo unificado de convite. Este script cobre os DOIS consumidores
+# conhecidos, reaproveitando o mesmo agente/usuário convidado:
+#   - property_api.py (GET /api/v1/properties) -- steps 1-6
+#   - lead_api.py      (GET /api/v1/leads)      -- steps 7-9
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../18.0/.env" 2>/dev/null || true
@@ -41,9 +48,13 @@ assert_status() {
 # (which uses the us026_* / us026_agent_pending@ etc. namespace).
 cleanup() {
   # FK ordering: real_estate_agent.profile_id / .user_id are ondelete='restrict',
-  # so it must be deleted before thedevkitchen_estate_profile / res_users.
+  # so it must be deleted before thedevkitchen_estate_profile / res_users. Same
+  # applies to real_estate_lead.agent_id (ondelete='restrict') -- the lead row
+  # must be gone before real_estate_agent is deleted.
   docker compose -f "${COMPOSE_FILE}" exec -T db psql -U odoo -d realestate -c \
     "DELETE FROM real_estate_property WHERE name = 'US026 RBAC Test Property';" >/dev/null 2>&1
+  docker compose -f "${COMPOSE_FILE}" exec -T db psql -U odoo -d realestate -c \
+    "DELETE FROM real_estate_lead WHERE name = 'US026 RBAC Test Lead';" >/dev/null 2>&1
   docker compose -f "${COMPOSE_FILE}" exec -T db psql -U odoo -d realestate -c \
     "DELETE FROM real_estate_agent WHERE profile_id IN (SELECT id FROM thedevkitchen_estate_profile WHERE email = 'us026_rbac_agent@example.com') OR user_id IN (SELECT u.id FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_rbac_agent@example.com');" >/dev/null 2>&1
   docker compose -f "${COMPOSE_FILE}" exec -T db psql -U odoo -d realestate -c \
@@ -180,6 +191,76 @@ if echo "$PROPERTIES_BODY" | jq -e --argjson pid "$PROPERTY_ID" '.data | any(.id
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
   echo "FAIL: returned property list does NOT include our assigned property_id=$PROPERTY_ID (returned ids: $RETURNED_IDS)"
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# 7. FR6.1: lead_api.py is the second existing consumer of agent_id.user_id
+# (domain.append(('agent_id.user_id', '=', user.id)) at lead_api.py:73, gated by
+# _is_agent_role()) that must be exercised by an agent created through the
+# unified invite flow. Reuse the SAME agent/user from steps 1-4 above --
+# no second invite flow needed.
+# NOTE: real_estate_lead's only NOT-NULL columns without a DB default are
+# name, state, agent_id, company_id (confirmed via `\d real_estate_lead`;
+# unlike real_estate_property, there is no location/type/status cluster to
+# fill in here). state has no DB-level default even though the Odoo model
+# declares default="new" at the ORM layer, so it must be supplied explicitly
+# in this raw INSERT.
+# create_date is nullable at the DB level (no default either, same as
+# active/write_date) but is NOT optional in practice: lead.py's
+# _compute_days_in_state() does `fields.Datetime.now() - record.create_date`
+# unconditionally, and GET /leads always reads days_in_state when serializing
+# (lead_api.py:245). Leaving create_date NULL (as a bare INSERT would) blows
+# up with "unsupported operand type(s) for -: 'datetime.datetime' and 'bool'"
+# -- confirmed by trial run against the live container -- so it must be set
+# explicitly here, unlike real_estate_property's insert which had no such
+# hidden compute dependency.
+docker compose -f "${COMPOSE_FILE}" exec -T db psql -U odoo -d realestate -c \
+  "INSERT INTO real_estate_lead (
+      name, company_id, agent_id, state, active, create_date, write_date
+   ) VALUES (
+      'US026 RBAC Test Lead', ${COMPANY_ID}, ${NEW_AGENT_ID}, 'new', TRUE, NOW(), NOW()
+   );" >/dev/null
+
+LEAD_ID=$(docker compose -f "${COMPOSE_FILE}" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT id FROM real_estate_lead WHERE name = 'US026 RBAC Test Lead';" | tr -d '[:space:]')
+echo "INFO: created lead_id=$LEAD_ID assigned to agent_id=$NEW_AGENT_ID"
+
+# 8. GET /api/v1/leads as the invited agent. Unlike GET /properties, this
+# endpoint has NO required query param -- request.company_domain is derived
+# by the require_company middleware straight from the X-Company-ID header
+# already present in AGENT_HEADERS (middleware.py:362-408), so omitting a
+# company_ids-style param here does not produce a 400.
+LEADS_RESPONSE=$(curl -s -w "\n%{http_code}" -X GET "${BASE_URL}/api/v1/leads" "${AGENT_HEADERS[@]}")
+LEADS_STATUS=$(echo "$LEADS_RESPONSE" | tail -n 1)
+LEADS_BODY=$(echo "$LEADS_RESPONSE" | sed '$d')
+assert_status "200" "$LEADS_STATUS" "invited agent can call GET /leads"
+
+# NOTE: unlike GET /properties (whose payload is a top-level "data" array),
+# GET /leads returns {"leads": [...], "pagination": {...}} directly --
+# success_response() in utils/response.py performs no extra wrapping, so the
+# response shape is exactly whatever dict list_leads() builds (lead_api.py
+# ~257-264). Confirmed by reading the code, not assumed from the properties
+# case.
+LEAD_COUNT=$(echo "$LEADS_BODY" | jq '.leads | length')
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$LEAD_COUNT" -gt 0 ] 2>/dev/null; then
+  echo "PASS: invited agent sees $LEAD_COUNT own lead(s) -- NOT an empty list"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: invited agent sees ZERO leads -- agent_id.user_id RBAC scoping in lead_api.py is not recognizing this agent"
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# 9. Confirm the returned list actually contains our specific lead_id (not
+# just a coincidental non-empty count from other residual data), mirroring
+# the property_id check in step 6.
+RETURNED_LEAD_IDS=$(echo "$LEADS_BODY" | jq -r '[.leads[].id] | join(",")')
+TESTS_RUN=$((TESTS_RUN + 1))
+if echo "$LEADS_BODY" | jq -e --argjson lid "$LEAD_ID" '.leads | any(.id == $lid)' >/dev/null 2>&1; then
+  echo "PASS: returned lead list includes our assigned lead_id=$LEAD_ID (returned ids: $RETURNED_LEAD_IDS)"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: returned lead list does NOT include our assigned lead_id=$LEAD_ID (returned ids: $RETURNED_LEAD_IDS)"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 

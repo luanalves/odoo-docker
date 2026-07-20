@@ -25,14 +25,20 @@ invite_controller.py::invite_user
     │  1. Carrega profile_record (já existente, Feature 010 — inalterado)
     │  2. Se profile_type == 'agent': valida agent_payload contra AGENT_INVITE_SCHEMA
     │  3. InviteService.create_user_from_profile(...)  (já existente — inalterado)
-    │  4. real.estate.agent.sudo().create({profile_id, user_id, **agent_payload filtrado})
-    │       └─ agent.py::create() (JÁ EXISTENTE, verificado em código) faz
-    │          vals.setdefault(...) para name/cpf/email/phone/mobile/hire_date/company_id
-    │          a partir do profile_record — o controller NÃO duplica esse fallback
+    │  4. UPSERT (achado 2026-07-19, ver "Correção de Design" abaixo):
+    │     search real.estate.agent por profile_id
+    │       ├─ existe (caso normal — profile_api.py já o auto-criou, sem user_id)
+    │       │    └─ write({user_id, **agent_payload filtrado})
+    │       └─ não existe (caso defensivo/legado)
+    │            └─ create({profile_id, user_id, **agent_payload filtrado})
+    │                └─ agent.py::create() (JÁ EXISTENTE) faz vals.setdefault(...) a
+    │                   partir do profile_record — só este ramo depende do fallback
     │  5. Token de convite + e-mail (já existente — inalterado, best-effort)
     ▼
 Resposta 201 { id, profile_id, agent_id, ... }
 ```
+
+**Correção de Design (achado durante a implementação, 2026-07-19)**: `profile_api.py` (`POST /api/v1/profiles`, Feature 010, não faz parte desta feature) já cria automaticamente um `real.estate.agent` (sem `user_id`) sempre que o perfil é do tipo `agent`. Um `create()` cego no passo 4 colidiria com esse registro já existente na restrição `UNIQUE(cpf, company_id)`, vazando um `psycopg2.errors.UniqueViolation` não capturado como 500 — depois que `res.users`/token já teriam sido criados, violando a atomicidade. A correção (confirmada com o usuário) é a semântica de upsert acima: `search` antes de decidir entre `write()`/`create()`. Ver `spec-idea.md`, seção "Achado de Implementação", para o histórico completo.
 
 `POST /api/v1/agents` (`agent_api.py::create_agent`) não é tocado por este fluxo — permanece funcionando exatamente como hoje até ser excluído por completo na Fase 5 da implementação.
 
@@ -43,7 +49,7 @@ Resposta 201 { id, profile_id, agent_id, ... }
 | Componente | Tipo de mudança | Responsabilidade |
 |---|---|---|
 | `quicksol_estate/controllers/utils/schema.py::AGENT_INVITE_SCHEMA` | Novo | Valida o objeto `agent` opcional do corpo da requisição. Reaproveita por referência (`AGENT_CREATE_SCHEMA["types"]`/`["constraints"]`) as mesmas funções de restrição de `create_agent` — não duplica as lambdas. Marca `name`/`cpf`/`email`/`phone`/`mobile`/`creci`/`hire_date`/`bank_name`/`bank_account`/`pix_key` como opcionais; `company_id`/`user_id` **fora** do conjunto de chaves aceitas. |
-| `thedevkitchen_user_onboarding/controllers/invite_controller.py::invite_user` | Modificado | Ramifica em `profile_type == 'agent'`; valida `agent_payload` contra `AGENT_INVITE_SCHEMA`; filtra `company_id`/`user_id` de qualquer payload recebido (`allowed_keys`); monta `agent_vals` com `profile_id`+`user_id`+campos filtrados; chama `real.estate.agent.sudo().create(agent_vals)` na mesma transação. Não reimplementa fallback de campos. |
+| `thedevkitchen_user_onboarding/controllers/invite_controller.py::invite_user` | Modificado | Ramifica em `profile_type == 'agent'`; valida `agent_payload` contra `AGENT_INVITE_SCHEMA`; filtra `company_id`/`user_id` de qualquer payload recebido (`allowed_keys`); **busca** (`search`) um `real.estate.agent` existente por `profile_id` — se achar, `write({user_id, **filtrado})`; se não, `create({profile_id, user_id, **filtrado})` (semântica de upsert, achado 2026-07-19: `profile_api.py` já auto-cria o registro sem `user_id`). Não reimplementa fallback de campos (só entra em jogo no ramo `create()`). |
 | `quicksol_estate/models/agent.py::create()` | **Inalterado** | Mecanismo de reaproveitamento de campos (`vals.setdefault(...)` a partir de `profile_id`) já existe (linhas 436-470) — nenhuma mudança de código aqui, apenas dependência confirmada. |
 | `quicksol_estate/models/agent.py::user_id` | Modificado (schema) | Ganha `index=True`. Sem migração de dados; Odoo cria o índice na atualização do módulo. |
 | `quicksol_estate/controllers/agent_api.py::create_agent` | Excluído (Fase 5, não nesta primeira entrega de código) | Rota, método e registro `thedevkitchen.api.endpoint` removidos por completo quando as pré-condições da User Story 3 forem satisfeitas. |
@@ -55,7 +61,7 @@ Resposta 201 { id, profile_id, agent_id, ... }
 ## Fluxo de Dados (detalhado)
 
 ```python
-# invite_controller.py::invite_user — esboço já validado em spec-idea.md
+# invite_controller.py::invite_user — esboço corrigido (upsert, achado 2026-07-19)
 agent_payload = data.get("agent")
 if profile_type == "agent":
     if agent_payload:
@@ -63,27 +69,33 @@ if profile_type == "agent":
         if not is_valid:
             return self._error_response(400, "validation_error", ", ".join(errors))
     # ... cria o usuário (já existente, InviteService.create_user_from_profile) ...
-    agent_vals = {
-        "profile_id": profile_record.id,
-        "user_id": user.id,
+    allowed_keys = {
+        "name", "cpf", "email", "phone", "mobile",
+        "creci", "hire_date", "bank_name", "bank_account", "pix_key",
     }
-    if agent_payload:
-        allowed_keys = {
-            "name", "cpf", "email", "phone", "mobile",
-            "creci", "hire_date", "bank_name", "bank_account", "pix_key",
-        }
-        agent_vals.update({
-            k: v for k, v in agent_payload.items()
-            if k in allowed_keys and v is not None
+    explicit_fields = {
+        k: v for k, v in (agent_payload or {}).items()
+        if k in allowed_keys and v is not None
+    }
+    Agent = request.env["real.estate.agent"].sudo()
+    existing_agent = Agent.search([("profile_id", "=", profile_record.id)], limit=1)
+    if existing_agent:
+        existing_agent.write({"user_id": user.id, **explicit_fields})
+        agent = existing_agent
+    else:
+        agent = Agent.create({
+            "profile_id": profile_record.id,
+            "user_id": user.id,
+            **explicit_fields,
         })
-    agent = request.env["real.estate.agent"].sudo().create(agent_vals)
 ```
 
 **Pontos de decisão de design já resolvidos** (com o "porquê", para quem for implementar):
 
-1. **Por que o controller não reescreve o fallback de campos?** Porque `real.estate.agent.create()` já faz isso (verificado no código, `agent.py:436-470`). Reescrever duplicaria uma lógica existente e criaria risco de divergência futura entre as duas implementações.
-2. **Por que `company_id`/`user_id` são filtrados no controller, e não simplesmente omitidos do schema?** Porque `AGENT_INVITE_SCHEMA["types"]`/`["constraints"]` são reaproveitados por referência do `AGENT_CREATE_SCHEMA` completo (que inclui `company_id`) — o filtro `allowed_keys` no controller é a barreira real que impede esses dois campos de chegar a `agent_vals`, independente do que o schema de tipos contenha.
-3. **Por que a ordem `profile_id` antes de `user_id` em `agent_vals` importa?** Porque `agent.py::create()` processa o bloco de `profile_id` antes do de `user_id`, e o primeiro já preenche `company_id` via `setdefault()` — isso é o que garante, na prática, que `company_id` sempre reflita a empresa do perfil, nunca a do usuário logado, quando os dois são passados juntos (este é exatamente o caso desta feature).
+1. **Por que buscar antes de escrever, em vez de só `create()`?** Porque `profile_api.py` (Feature 010, `POST /api/v1/profiles`) já cria automaticamente um `real.estate.agent` sem `user_id` quando o perfil é do tipo `agent` — achado confirmado ao vivo (`odoo shell`) durante a implementação da Task 4. Um `create()` cego colide com esse registro na restrição `UNIQUE(cpf, company_id)`, vazando um erro não tratado (`UniqueViolation`, não `ValidationError`) como 500 depois que `res.users`/token já existiriam — quebrando a atomicidade que esta spec exige.
+2. **Por que o controller não reescreve o fallback de campos?** Porque `real.estate.agent.create()` já faz isso (verificado no código, `agent.py:436-470`) — mas isso só é relevante no ramo `create()` (defensivo); no ramo `write()` (caso normal), os campos de identidade já foram preenchidos por `profile_api.py` no momento da criação do perfil, então `write()` só precisa aplicar `user_id` + eventuais overrides explícitos.
+3. **Por que `company_id`/`user_id` são filtrados no controller, e não simplesmente omitidos do schema?** Porque `AGENT_INVITE_SCHEMA["types"]`/`["constraints"]` são reaproveitados por referência do `AGENT_CREATE_SCHEMA` completo (que inclui `company_id`) — o filtro `allowed_keys` no controller é a barreira real que impede esses dois campos de chegar a `explicit_fields`, independente do que o schema de tipos contenha.
+4. **Por que a ordem `profile_id` antes de `user_id` importa no ramo `create()` (defensivo)?** Porque `agent.py::create()` processa o bloco de `profile_id` antes do de `user_id`, e o primeiro já preenche `company_id` via `setdefault()` — isso é o que garante, na prática, que `company_id` sempre reflita a empresa do perfil, nunca a do usuário logado, quando os dois são passados juntos. No ramo `write()` (caso normal), `company_id` já está correto no registro existente e não é tocado.
 
 ---
 

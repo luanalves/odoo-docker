@@ -453,16 +453,18 @@ git commit -m "test(quicksol_estate): characterize agent.create() profile/user s
 
 ---
 
-### Task 4: `invite_controller.py::invite_user` — criação atômica do agente + teste E2E do fluxo feliz
+### Task 4: `invite_controller.py::invite_user` — vínculo/criação atômica do agente (upsert) + teste E2E do fluxo feliz
 
 Esta é a tarefa central. Como este projeto testa o comportamento HTTP real via scripts curl (não `HttpCase`, por sua limitação de transação somente-leitura — ver `CLAUDE.md` §10), o ciclo TDD aqui é: escrever o script curl primeiro, rodá-lo contra o código atual (falha), implementar a mudança no controller, rodar de novo (passa).
+
+**⚠️ ACHADO CRÍTICO DURANTE A EXECUÇÃO (2026-07-19), CORRIGIDO NESTA VERSÃO DA TASK — leia antes de implementar**: `profile_api.py` (`POST /api/v1/profiles`, código pré-existente da Feature 010, linhas 236-255, NÃO faz parte desta feature) **já cria automaticamente** um `real.estate.agent` (com `profile_id`, `name`, `cpf`, `email`, `phone`, `mobile`, `company_id`, `hire_date` — mas `user_id` nulo) sempre que o perfil criado é do tipo `agent`. Isso significa que, no momento em que `POST /api/v1/users/invite` é chamado (a precondição do fluxo feliz: "perfil já criado via `POST /api/v1/profiles`"), **um `real.estate.agent` para aquele `profile_id` já existe**. Um `create()` cego (como uma versão anterior desta task especificava) colide com esse registro na restrição `UNIQUE(cpf, company_id)` (`_sql_constraints`, `agent.py:218-224`), gerando `psycopg2.errors.UniqueViolation` — que **não** é `ValidationError` e vazaria como 500 depois que `res.users`/token já teriam sido criados, quebrando a atomicidade (FR2.2). Isso foi reproduzido ao vivo via `odoo shell` durante uma tentativa anterior de implementação desta task, e não é um caso extremo: acontece 100% das vezes que um perfil `agent` é criado pela API real antes do convite, que é a única forma como perfis são criados na prática. **A correção (confirmada com o solicitante): semântica de upsert** — buscar (`search`) um `real.estate.agent` existente por `profile_id` antes de decidir entre `write()` (se existir — caso normal) ou `create()` (se não existir — caso defensivo/legado). Os passos abaixo já refletem essa correção.
 
 **Arquivos:**
 - Modificar: `18.0/extra-addons/thedevkitchen_user_onboarding/controllers/invite_controller.py:33-171`
 - Criar: `integration_tests/test_us026_s1_invite_agent_unification.sh`
 
 **Interfaces:**
-- Consome: `SchemaValidator.validate_agent_invite` (Task 2), `real.estate.agent.create()` (Task 3, inalterado), `InviteService.create_user_from_profile` (já existente, `invite_service.py:189-256`, inalterado).
+- Consome: `SchemaValidator.validate_agent_invite` (Task 2), `real.estate.agent.create()`/`.write()` (Task 3 provou o mecanismo de fallback do `create()`; `write()` não tem esse mecanismo — não precisa, já que os campos de identidade já vieram do `profile_api.py`), `InviteService.create_user_from_profile` (já existente, `invite_service.py:189-256`, inalterado).
 - Produz: resposta `201` de `POST /api/v1/users/invite` com `data.agent_id` (novo campo) e `links.agent` (novo link) quando `profile_type == 'agent'`.
 
 - [ ] **Passo 1: Escrever o script E2E que falha (parte 1 — fluxo feliz + paridade de campos)**
@@ -526,12 +528,23 @@ LOGIN_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/users/login" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${BEARER_TOKEN}" \
   -d "{\"login\":\"${TEST_USER_MANAGER}\",\"password\":\"${TEST_PASSWORD_MANAGER}\"}")
-SESSION_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.data.session_id')
-COMPANY_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.data.user.default_company_id')
+# CORRIGIDO (achado 2026-07-19): a resposta de /api/v1/users/login NÃO tem wrapper .data —
+# os campos vêm direto na raiz, confirmado contra o container ao vivo e contra
+# test_us9_s6_resend_invite.sh (que já lê .session_id/.user.default_company_id sem .data).
+SESSION_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.session_id')
+COMPANY_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.user.default_company_id')
 
 AUTH_HEADERS=(-H "Authorization: Bearer ${BEARER_TOKEN}" -H "X-Openerp-Session-Id: ${SESSION_ID}" -H "X-Company-ID: ${COMPANY_ID}")
 
-# --- Cria o profile (pré-requisito — profile_id continua obrigatório, decisão confirmada) ---
+# --- Resolve o FK inteiro de profile_type_id (achado 2026-07-19: profile_api.py exige um
+# inteiro de thedevkitchen_profile_type.id, NÃO a string "agent" — profile_api.py:174-182) ---
+AGENT_PROFILE_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT id FROM thedevkitchen_profile_type WHERE code = 'agent' LIMIT 1;" | tr -d '[:space:]')
+
+# --- Cria o profile (pré-requisito — profile_id continua obrigatório, decisão confirmada).
+# NOTA: isso já dispara profile_api.py:236-255, que auto-cria um real_estate_agent para este
+# profile_id (sem user_id) — é exatamente esse registro que o convite abaixo deve vincular
+# (write), não duplicar (create). Ver o "Achado Crítico" no topo desta task. ---
 PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{
@@ -540,12 +553,24 @@ PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profi
     "document": "39053344705",
     "email": "us026_agent_pending@example.com",
     "birthdate": "1990-01-01",
-    "profile_type_id": "agent"
+    "profile_type_id": '"${AGENT_PROFILE_TYPE_ID}"'
   }')
 PROFILE_BODY=$(echo "$PROFILE_RESPONSE" | sed '$d')
 PROFILE_STATUS=$(echo "$PROFILE_RESPONSE" | tail -n 1)
 assert_status "201" "$PROFILE_STATUS" "profile creation"
 PROFILE_ID=$(echo "$PROFILE_BODY" | jq -r '.data.id')
+
+# --- Confirma a premissa do achado: profile_api.py já criou um real_estate_agent órfão ---
+PRE_EXISTING_COUNT=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT COUNT(*) FROM real_estate_agent WHERE profile_id = ${PROFILE_ID};" | tr -d '[:space:]')
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$PRE_EXISTING_COUNT" = "1" ]; then
+  echo "PASS: profile_api.py auto-created exactly 1 real_estate_agent row for this profile (as expected)"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: expected exactly 1 pre-existing real_estate_agent row, got $PRE_EXISTING_COUNT — the achado's premise may no longer hold, investigate before trusting the rest of this script"
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
 
 # --- Convite com paridade total de campos no nó agent ---
 INVITE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
@@ -598,6 +623,19 @@ else
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
+# --- Confirma semântica de upsert: ainda existe SÓ 1 linha para este profile_id (write, não
+# um segundo create() duplicado) — e é a MESMA linha que profile_api.py já tinha criado ---
+POST_INVITE_COUNT=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT COUNT(*) FROM real_estate_agent WHERE profile_id = ${PROFILE_ID};" | tr -d '[:space:]')
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$POST_INVITE_COUNT" = "1" ]; then
+  echo "PASS: exactly 1 real_estate_agent row for this profile_id after invite (upsert, not duplicate create)"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: expected exactly 1 real_estate_agent row after invite, got $POST_INVITE_COUNT (duplicate create() instead of upsert write()?)"
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
 cleanup_test_data
 
 echo ""
@@ -617,7 +655,7 @@ cd 18.0 && docker compose up -d
 cd ..
 ./integration_tests/test_us026_s1_invite_agent_unification.sh
 ```
-Esperado: FALHA em "response includes agent_id" e na verificação de banco — hoje `invite_user` não cria nenhum `real.estate.agent` nem aceita o objeto `agent`.
+Esperado: os dois asserts novos ("profile_api.py auto-created exactly 1 real_estate_agent row" e "exactly 1 real_estate_agent row for this profile_id after invite") já devem PASSAR mesmo sem nenhuma mudança de código, já que `profile_api.py` já auto-cria o registro hoje. O que deve FALHAR é "response includes agent_id" e "real_estate_agent row has BOTH profile_id and user_id set, plus creci" — o registro já existe, mas `user_id` continua nulo e o convite hoje não mexe nele.
 
 - [ ] **Passo 3: Implementar a mudança em `invite_controller.py::invite_user`**
 
@@ -638,26 +676,37 @@ Logo após a linha que lê `profile_type = profile_record.profile_type_id.code` 
                     )
 ```
 
-Logo após o bloco existente que cria o usuário (`user = invite_service.create_user_from_profile(...)`, dentro do mesmo `try`, depois do `except ValidationError` correspondente) e **antes** da geração do token de convite, adicionar a criação atômica do agente:
+Logo após o bloco existente que cria o usuário (`user = invite_service.create_user_from_profile(...)`, dentro do mesmo `try`, depois do `except ValidationError` correspondente) e **antes** da geração do token de convite, adicionar o vínculo/criação atômica do agente — **semântica de upsert** (achado 2026-07-19: `profile_api.py` já auto-cria o registro sem `user_id`; buscar antes de decidir entre `write()`/`create()`, para não colidir em `UNIQUE(cpf, company_id)`):
 ```python
-            # Feature 026: create real.estate.agent atomically, linked to BOTH profile and login (FR2.1, FR2.1b)
+            # Feature 026: link (or, defensively, create) real.estate.agent atomically,
+            # linked to BOTH profile and login (FR2.1, FR2.1b).
+            # Upsert semantics: profile_api.py (Feature 010) already auto-creates a
+            # real.estate.agent (without user_id) whenever the profile is type 'agent' —
+            # a blind create() here would collide on UNIQUE(cpf, company_id).
             agent_id = None
             if profile_type == "agent":
                 allowed_agent_keys = {
                     "name", "cpf", "email", "phone", "mobile",
                     "creci", "hire_date", "bank_name", "bank_account", "pix_key",
                 }
-                agent_vals = {
-                    "profile_id": profile_record.id,
-                    "user_id": user.id,
+                explicit_fields = {
+                    k: v for k, v in (agent_payload or {}).items()
+                    if k in allowed_agent_keys and v is not None
                 }
-                if agent_payload:
-                    agent_vals.update({
-                        k: v for k, v in agent_payload.items()
-                        if k in allowed_agent_keys and v is not None
-                    })
+                Agent = request.env["real.estate.agent"].sudo()
+                existing_agent = Agent.search(
+                    [("profile_id", "=", profile_record.id)], limit=1
+                )
                 try:
-                    agent_record = request.env["real.estate.agent"].sudo().create(agent_vals)
+                    if existing_agent:
+                        existing_agent.write({"user_id": user.id, **explicit_fields})
+                        agent_record = existing_agent
+                    else:
+                        agent_record = Agent.create({
+                            "profile_id": profile_record.id,
+                            "user_id": user.id,
+                            **explicit_fields,
+                        })
                 except ValidationError as e:
                     return self._error_response(409, "conflict", str(e))
                 agent_id = agent_record.id
@@ -695,7 +744,7 @@ Esperado: PASSA (todas as asserções).
 git add 18.0/extra-addons/thedevkitchen_user_onboarding/controllers/invite_controller.py \
         18.0/extra-addons/thedevkitchen_user_onboarding/__manifest__.py \
         integration_tests/test_us026_s1_invite_agent_unification.sh
-git commit -m "feat(thedevkitchen_user_onboarding): create real.estate.agent atomically during invite"
+git commit -m "feat(thedevkitchen_user_onboarding): link/create real.estate.agent atomically during invite (upsert by profile_id)"
 ```
 
 ---
@@ -714,7 +763,7 @@ git commit -m "feat(thedevkitchen_user_onboarding): create real.estate.agent ato
 # --- Cenário: agent.creci mal formado -> 400, nenhum registro criado ---
 BAD_CRECI_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Bad Creci","company_id":'"${COMPANY_ID}"',"document":"52998224725","email":"us026_bad_creci@example.com","birthdate":"1990-01-01","profile_type_id":"agent"}')
+  -d '{"name":"US026 Bad Creci","company_id":'"${COMPANY_ID}"',"document":"52998224725","email":"us026_bad_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
 BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_RESPONSE" | sed '$d' | jq -r '.data.id')
 
 INVALID_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
@@ -740,7 +789,7 @@ fi
 # --- Cenário: CRECI duplicado na mesma empresa -> 409 ---
 DUP_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Dup Creci","company_id":'"${COMPANY_ID}"',"document":"91129418804","email":"us026_dup_creci@example.com","birthdate":"1990-01-01","profile_type_id":"agent"}')
+  -d '{"name":"US026 Dup Creci","company_id":'"${COMPANY_ID}"',"document":"91129418804","email":"us026_dup_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
 DUP_PROFILE_ID=$(echo "$DUP_PROFILE_RESPONSE" | jq -r '.data.id')
 
 FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" \
@@ -749,7 +798,7 @@ FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" \
 
 DUP_PROFILE2_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Dup Creci 2","company_id":'"${COMPANY_ID}"',"document":"15350946056","email":"us026_dup_creci_2@example.com","birthdate":"1990-01-01","profile_type_id":"agent"}')
+  -d '{"name":"US026 Dup Creci 2","company_id":'"${COMPANY_ID}"',"document":"15350946056","email":"us026_dup_creci_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
 DUP_PROFILE2_ID=$(echo "$DUP_PROFILE2_RESPONSE" | jq -r '.data.id')
 
 DUP_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
@@ -761,7 +810,7 @@ assert_status "409" "$DUP_INVITE_STATUS" "duplicate creci in same company return
 # --- Cenário: cliente envia company_id/user_id no nó agent -> ignorados silenciosamente ---
 SPOOF_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Spoof Test","company_id":'"${COMPANY_ID}"',"document":"74954510736","email":"us026_spoof@example.com","birthdate":"1990-01-01","profile_type_id":"agent"}')
+  -d '{"name":"US026 Spoof Test","company_id":'"${COMPANY_ID}"',"document":"74954510736","email":"us026_spoof@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
 SPOOF_PROFILE_ID=$(echo "$SPOOF_PROFILE_RESPONSE" | jq -r '.data.id')
 
 SPOOF_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
@@ -843,13 +892,18 @@ BEARER_TOKEN=$(curl -s -X POST "${BASE_URL}/api/v1/auth/token" -H "Content-Type:
 LOGIN_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/users/login" -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${BEARER_TOKEN}" \
   -d "{\"login\":\"${TEST_USER_MANAGER}\",\"password\":\"${TEST_PASSWORD_MANAGER}\"}")
-SESSION_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.data.session_id')
-COMPANY_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.data.user.default_company_id')
+# CORRIGIDO (achado 2026-07-19): sem wrapper .data, ver nota na Task 4
+SESSION_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.session_id')
+COMPANY_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.user.default_company_id')
 AUTH_HEADERS=(-H "Authorization: Bearer ${BEARER_TOKEN}" -H "X-Openerp-Session-Id: ${SESSION_ID}" -H "X-Company-ID: ${COMPANY_ID}")
+
+# Resolve o FK inteiro de profile_type_id (achado 2026-07-19, ver Task 4)
+AGENT_PROFILE_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT id FROM thedevkitchen_profile_type WHERE code = 'agent' LIMIT 1;" | tr -d '[:space:]')
 
 # 1. Cria profile + convite
 PROFILE_ID=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 RBAC Agent","company_id":'"${COMPANY_ID}"',"document":"60011239301","email":"us026_rbac_agent@example.com","birthdate":"1990-01-01","profile_type_id":"agent"}' \
+  -d '{"name":"US026 RBAC Agent","company_id":'"${COMPANY_ID}"',"document":"60011239301","email":"us026_rbac_agent@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}' \
   | jq -r '.data.id')
 INVITE_BODY=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"profile_id":'"${PROFILE_ID}"',"agent":{"creci":"CRECI-SP 888888"}}')
@@ -869,7 +923,7 @@ docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U 
 AGENT_LOGIN=$(curl -s -X POST "${BASE_URL}/api/v1/users/login" -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${BEARER_TOKEN}" \
   -d '{"login":"us026_rbac_agent@example.com","password":"rbac_test_pass_026"}')
-AGENT_SESSION_ID=$(echo "$AGENT_LOGIN" | jq -r '.data.session_id')
+AGENT_SESSION_ID=$(echo "$AGENT_LOGIN" | jq -r '.session_id')  # sem wrapper .data, ver Task 4
 AGENT_HEADERS=(-H "Authorization: Bearer ${BEARER_TOKEN}" -H "X-Openerp-Session-Id: ${AGENT_SESSION_ID}" -H "X-Company-ID: ${COMPANY_ID}")
 
 # 5. O PRÓPRIO teste da lacuna que a Feature 025 deixaria aberta:
@@ -943,12 +997,16 @@ BEARER_TOKEN=$(curl -s -X POST "${BASE_URL}/api/v1/auth/token" -H "Content-Type:
 LOGIN_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/users/login" -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${BEARER_TOKEN}" \
   -d "{\"login\":\"${TEST_USER_MANAGER}\",\"password\":\"${TEST_PASSWORD_MANAGER}\"}")
-SESSION_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.data.session_id')
-COMPANY_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.data.user.default_company_id')
+SESSION_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.session_id')  # sem wrapper .data, ver Task 4
+COMPANY_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.user.default_company_id')
 AUTH_HEADERS=(-H "Authorization: Bearer ${BEARER_TOKEN}" -H "X-Openerp-Session-Id: ${SESSION_ID}" -H "X-Company-ID: ${COMPANY_ID}")
 
+# Resolve o FK inteiro de profile_type_id (achado 2026-07-19, ver Task 4)
+AGENT_PROFILE_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT id FROM thedevkitchen_profile_type WHERE code = 'agent' LIMIT 1;" | tr -d '[:space:]')
+
 PROFILE_ID=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Resend Agent","company_id":'"${COMPANY_ID}"',"document":"88817915058","email":"us026_resend_agent@example.com","birthdate":"1990-01-01","profile_type_id":"agent"}' \
+  -d '{"name":"US026 Resend Agent","company_id":'"${COMPANY_ID}"',"document":"88817915058","email":"us026_resend_agent@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}' \
   | jq -r '.data.id')
 FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"profile_id":'"${PROFILE_ID}"',"agent":{"creci":"CRECI-SP 444444"}}')

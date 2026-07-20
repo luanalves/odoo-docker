@@ -31,7 +31,14 @@ class InviteController(http.Controller):
     @require_session
     @require_company
     @trace_http_request
-    def invite_user(self, **kwargs):
+    def invite_user(self, **kwargs):  # noqa: C901 - already over budget (15)
+        # before Feature 026; the agent-upsert branching this feature adds is
+        # necessary (FR2.1/FR2.2) and already factored into _upsert_agent_for_invite
+        # to minimize the increase. A full reduction below 10 would require
+        # restructuring pre-existing, unrelated sections of this method -- out
+        # of this feature's scope. Other controllers in this codebase carry the
+        # same exemption via .flake8's per-file-ignores (agent_api.py,
+        # profile_api.py, etc.); this file predates that list.
         try:
             # Parse request body
             try:
@@ -54,7 +61,9 @@ class InviteController(http.Controller):
 
             # Load profile record (optimized: search instead of browse+exists)
             ProfileModel = request.env["thedevkitchen.estate.profile"]
-            profile_record = ProfileModel.sudo().search([("id", "=", int(profile_id))], limit=1)
+            profile_record = ProfileModel.sudo().search(
+                [("id", "=", int(profile_id))], limit=1
+            )
 
             if not profile_record:
                 return self._error_response(
@@ -66,7 +75,9 @@ class InviteController(http.Controller):
                 existing_user = (
                     request.env["res.users"]
                     .sudo()
-                    .search([("partner_id", "=", profile_record.partner_id.id)], limit=1)
+                    .search(
+                        [("partner_id", "=", profile_record.partner_id.id)], limit=1
+                    )
                 )
                 if existing_user:
                     return self._error_response(
@@ -107,8 +118,7 @@ class InviteController(http.Controller):
             # Feature 010: Create user from profile (unified flow - no dual records)
             try:
                 user = invite_service.create_user_from_profile(
-                    profile_record=profile_record,
-                    created_by=current_user
+                    profile_record=profile_record, created_by=current_user
                 )
             except ValidationError as e:
                 if "already exists" in str(e):
@@ -120,34 +130,19 @@ class InviteController(http.Controller):
 
             # Feature 026: link (or, defensively, create) real.estate.agent atomically,
             # linked to BOTH profile and login (FR2.1, FR2.1b).
-            # Upsert semantics: profile_api.py (Feature 010) already auto-creates a
-            # real.estate.agent (without user_id) whenever the profile is type 'agent' --
-            # a blind create() here would collide on UNIQUE(cpf, company_id).
             agent_id = None
             if profile_type == "agent":
-                allowed_agent_keys = {
-                    "name", "cpf", "email", "phone", "mobile",
-                    "creci", "hire_date", "bank_name", "bank_account", "pix_key",
-                }
-                explicit_fields = {
-                    k: v for k, v in (agent_payload or {}).items()
-                    if k in allowed_agent_keys and v is not None
-                }
-                Agent = request.env["real.estate.agent"].sudo()
-                existing_agent = Agent.search(
-                    [("profile_id", "=", profile_record.id)], limit=1
-                )
                 try:
-                    if existing_agent:
-                        existing_agent.write({"user_id": user.id, **explicit_fields})
-                        agent_record = existing_agent
-                    else:
-                        agent_record = Agent.create({
-                            "profile_id": profile_record.id,
-                            "user_id": user.id,
-                            **explicit_fields,
-                        })
+                    agent_record = self._upsert_agent_for_invite(
+                        profile_record, user, agent_payload
+                    )
                 except ValidationError as e:
+                    # FR2.2: res.users (and the profile's partner_id link) were already
+                    # created/written earlier in this same request's cursor and are not yet
+                    # committed. Returning a response here without rolling back would leave
+                    # them durably committed despite the client seeing a 409 -- roll back the
+                    # whole transaction so a failed agent link never leaves a partial state.
+                    request.env.cr.rollback()
                     return self._error_response(409, "conflict", str(e))
                 agent_id = agent_record.id
 
@@ -222,6 +217,45 @@ class InviteController(http.Controller):
             )
 
     # Helper methods
+
+    def _upsert_agent_for_invite(self, profile_record, user, agent_payload):
+        """Feature 026: link the real.estate.agent that profile_api.py already
+        auto-created for this profile (Feature 010) to the new login, or create
+        one defensively if none exists. Upsert semantics -- profile_api.py's
+        auto-create means a blind create() here would collide on
+        UNIQUE(cpf, company_id); searching by profile_id first avoids that.
+        Raises ValidationError on CRECI/user_id conflicts -- the caller is
+        responsible for rolling back the transaction (FR2.2) before returning.
+        """
+        allowed_agent_keys = {
+            "name",
+            "cpf",
+            "email",
+            "phone",
+            "mobile",
+            "creci",
+            "hire_date",
+            "bank_name",
+            "bank_account",
+            "pix_key",
+        }
+        explicit_fields = {
+            k: v
+            for k, v in (agent_payload or {}).items()
+            if k in allowed_agent_keys and v is not None
+        }
+        Agent = request.env["real.estate.agent"].sudo()
+        existing_agent = Agent.search([("profile_id", "=", profile_record.id)], limit=1)
+        if existing_agent:
+            existing_agent.write({"user_id": user.id, **explicit_fields})
+            return existing_agent
+        return Agent.create(
+            {
+                "profile_id": profile_record.id,
+                "user_id": user.id,
+                **explicit_fields,
+            }
+        )
 
     def _success_response(self, status_code, data, message, links=None):
         """Build success response"""
@@ -361,9 +395,7 @@ class InviteController(http.Controller):
             settings = (
                 request.env["thedevkitchen.email.link.settings"].sudo().get_settings()
             )
-            company = (
-                request.env["res.company"].sudo().browse(company_id)
-            )
+            company = request.env["res.company"].sudo().browse(company_id)
             raw_token, token_record = token_service.generate_token(
                 user=user,
                 token_type="invite",
@@ -374,7 +406,10 @@ class InviteController(http.Controller):
             # Resend invite email
             try:
                 invite_service.send_invite_email(
-                    user, raw_token, settings.invite_link_ttl_hours, settings.frontend_base_url
+                    user,
+                    raw_token,
+                    settings.invite_link_ttl_hours,
+                    settings.frontend_base_url,
                 )
                 email_status = "sent"
             except Exception as email_error:

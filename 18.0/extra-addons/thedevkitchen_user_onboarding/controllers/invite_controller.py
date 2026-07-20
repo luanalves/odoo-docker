@@ -9,6 +9,7 @@ from odoo.addons.thedevkitchen_apigateway.middleware import (
     require_session,
     require_company,
 )
+from odoo.addons.quicksol_estate.controllers.utils.schema import SchemaValidator
 from odoo.addons.quicksol_estate.services.role_resolver import resolve_role
 from odoo.addons.thedevkitchen_observability.services.tracer import trace_http_request
 from ..services.invite_service import InviteService
@@ -80,6 +81,15 @@ class InviteController(http.Controller):
             profile_type = profile_record.profile_type_id.code
             email = profile_record.email
 
+            # Feature 026: read optional 'agent' object, validate BEFORE any res.users is created
+            agent_payload = data.get("agent")
+            if profile_type == "agent" and agent_payload:
+                is_valid, errors = SchemaValidator.validate_agent_invite(agent_payload)
+                if not is_valid:
+                    return self._error_response(
+                        400, "validation_error", ", ".join(errors)
+                    )
+
             # Get authenticated user
             current_user = request.env.user
 
@@ -107,6 +117,39 @@ class InviteController(http.Controller):
                         409, "conflict", str(e), {"field": field}
                     )
                 return self._error_response(400, "validation_error", str(e))
+
+            # Feature 026: link (or, defensively, create) real.estate.agent atomically,
+            # linked to BOTH profile and login (FR2.1, FR2.1b).
+            # Upsert semantics: profile_api.py (Feature 010) already auto-creates a
+            # real.estate.agent (without user_id) whenever the profile is type 'agent' --
+            # a blind create() here would collide on UNIQUE(cpf, company_id).
+            agent_id = None
+            if profile_type == "agent":
+                allowed_agent_keys = {
+                    "name", "cpf", "email", "phone", "mobile",
+                    "creci", "hire_date", "bank_name", "bank_account", "pix_key",
+                }
+                explicit_fields = {
+                    k: v for k, v in (agent_payload or {}).items()
+                    if k in allowed_agent_keys and v is not None
+                }
+                Agent = request.env["real.estate.agent"].sudo()
+                existing_agent = Agent.search(
+                    [("profile_id", "=", profile_record.id)], limit=1
+                )
+                try:
+                    if existing_agent:
+                        existing_agent.write({"user_id": user.id, **explicit_fields})
+                        agent_record = existing_agent
+                    else:
+                        agent_record = Agent.create({
+                            "profile_id": profile_record.id,
+                            "user_id": user.id,
+                            **explicit_fields,
+                        })
+                except ValidationError as e:
+                    return self._error_response(409, "conflict", str(e))
+                agent_id = agent_record.id
 
             # Generate invite token
             raw_token, token_record = token_service.generate_token(
@@ -149,6 +192,10 @@ class InviteController(http.Controller):
             if not email_sent:
                 response_data["email_status"] = "failed"
 
+            # Feature 026: include agent_id when a real.estate.agent was linked/created
+            if agent_id:
+                response_data["agent_id"] = agent_id
+
             # Build HATEOAS links (as dict for easier access in tests)
             links = {
                 "self": f"/api/v1/users/{user.id}",
@@ -156,6 +203,10 @@ class InviteController(http.Controller):
                 "collection": "/api/v1/users",
                 "profile": f"/api/v1/profiles/{profile_id}",
             }
+
+            # Feature 026: HATEOAS link to the linked/created agent record
+            if agent_id:
+                links["agent"] = f"/api/v1/agents/{agent_id}"
 
             return self._success_response(
                 201,

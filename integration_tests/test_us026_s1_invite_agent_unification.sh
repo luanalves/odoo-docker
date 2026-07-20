@@ -38,6 +38,19 @@ assert_field_value() {
 }
 
 cleanup_test_data() {
+  # NOTE (found while adding Task 5 scenarios): real_estate_agent.profile_id and
+  # .user_id are both ondelete='restrict' FKs (confirmed via pg_constraint:
+  # confdeltype='r' on real_estate_agent_profile_id_fkey/real_estate_agent_user_id_fkey).
+  # Every scenario in this script creates an agent-type profile, which always ends up
+  # with a linked real_estate_agent row (auto-created by profile_api.py and/or
+  # upserted by the invite controller) -- so the two DELETEs below used to fail
+  # silently (stderr redirected to /dev/null) whenever a prior run's agent row was
+  # still around, leaving orphaned res_users/profile rows that then made the NEXT
+  # run's profile creation return 409 instead of 201. Deleting real_estate_agent
+  # first (scoped to both profile_id and user_id, since the two aren't always the
+  # same set after a failed/partial run) clears the FK block before the rest.
+  docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
+    "DELETE FROM real_estate_agent WHERE profile_id IN (SELECT id FROM thedevkitchen_estate_profile WHERE email LIKE 'us026_%@example.com') OR user_id IN (SELECT u.id FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email LIKE 'us026_%@example.com');" >/dev/null 2>&1
   docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
     "DELETE FROM res_users WHERE login LIKE 'us026_%@example.com';" >/dev/null 2>&1
   docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
@@ -165,6 +178,85 @@ if [ "$POST_INVITE_COUNT" = "1" ]; then
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
   echo "FAIL: expected exactly 1 real_estate_agent row after invite, got $POST_INVITE_COUNT (duplicate create() instead of upsert write()?)"
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# --- Cenário: agent.creci mal formado -> 400, nenhum registro criado ---
+BAD_CRECI_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"US026 Bad Creci","company_id":'"${COMPANY_ID}"',"document":"52998224725","email":"us026_bad_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_RESPONSE" | sed '$d' | jq -r '.id')
+
+INVALID_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"profile_id":'"${BAD_CRECI_PROFILE_ID}"',"agent":{"creci":"ab"}}')
+INVALID_INVITE_STATUS=$(echo "$INVALID_INVITE" | tail -n 1)
+assert_status "400" "$INVALID_INVITE_STATUS" "creci too short returns 400"
+
+# Atomicidade (FR2.2): nenhum res.users deve ter sido criado para este profile
+ATOMIC_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT COUNT(*) FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_bad_creci@example.com';")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$(echo "$ATOMIC_CHECK" | tr -d '[:space:]')" = "0" ]; then
+  echo "PASS: atomic rollback — no res.users created after creci validation failure"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: atomic rollback — a res.users row exists despite the 400 (got count: $ATOMIC_CHECK)"
+  echo "  ACTION IF THIS FAILS: add request.env.cr.rollback() before the 409/400 return"
+  echo "  inside invite_controller.py's new agent-creation except block, then re-run."
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# --- Cenário: CRECI duplicado na mesma empresa -> 409 ---
+# NOTE: brief's original CPFs for this pair (91129418804 / 74954510736) fail CPF
+# checksum validation (validators.validate_document via validate_docbr, confirmed
+# live: cpf.validate() returns False for both) -- profile creation would 400/409
+# on document validation before ever reaching the invite step. Replaced with
+# freshly generated, checksum-valid CPFs (confirmed cpf.validate()==True and no
+# collision with any existing profile under this test's company_id).
+DUP_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"US026 Dup Creci","company_id":'"${COMPANY_ID}"',"document":"15350946056","email":"us026_dup_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+DUP_PROFILE_ID=$(echo "$DUP_PROFILE_RESPONSE" | jq -r '.id')
+
+FIRST_INVITE=$(curl -s -X POST "${BASE_URL}/api/v1/users/invite" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"profile_id":'"${DUP_PROFILE_ID}"',"agent":{"creci":"CRECI-SP 555555"}}')
+
+DUP_PROFILE2_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"US026 Dup Creci 2","company_id":'"${COMPANY_ID}"',"document":"10433218100","email":"us026_dup_creci_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+DUP_PROFILE2_ID=$(echo "$DUP_PROFILE2_RESPONSE" | jq -r '.id')
+
+DUP_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"profile_id":'"${DUP_PROFILE2_ID}"',"agent":{"creci":"CRECI-SP 555555"}}')
+DUP_INVITE_STATUS=$(echo "$DUP_INVITE" | tail -n 1)
+assert_status "409" "$DUP_INVITE_STATUS" "duplicate creci in same company returns 409"
+
+# --- Cenário: cliente envia company_id/user_id no nó agent -> ignorados silenciosamente ---
+# NOTE: brief's original CPF (74954510736) is also checksum-invalid, replaced for the
+# same reason as above (96001338914, confirmed valid and non-colliding).
+SPOOF_PROFILE_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/profiles" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"US026 Spoof Test","company_id":'"${COMPANY_ID}"',"document":"96001338914","email":"us026_spoof@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+SPOOF_PROFILE_ID=$(echo "$SPOOF_PROFILE_RESPONSE" | jq -r '.id')
+
+SPOOF_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"profile_id":'"${SPOOF_PROFILE_ID}"',"agent":{"company_id":999999,"user_id":999999,"creci":"CRECI-SP 777777"}}')
+SPOOF_STATUS=$(echo "$SPOOF_INVITE" | tail -n 1)
+assert_status "201" "$SPOOF_STATUS" "company_id/user_id in agent node do not cause a 400"
+
+SPOOF_AGENT_ID=$(echo "$SPOOF_INVITE" | sed '$d' | jq -r '.data.agent_id')
+SPOOF_DB_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT company_id FROM real_estate_agent WHERE id = ${SPOOF_AGENT_ID};")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$(echo "$SPOOF_DB_CHECK" | tr -d '[:space:]')" = "${COMPANY_ID}" ]; then
+  echo "PASS: spoofed company_id (999999) ignored, real company_id (${COMPANY_ID}) persisted"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: company_id spoofing NOT blocked (got: $SPOOF_DB_CHECK, expected ${COMPANY_ID})"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 

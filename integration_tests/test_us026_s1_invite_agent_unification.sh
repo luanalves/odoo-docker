@@ -308,6 +308,67 @@ else
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
+# --- Cenário (final whole-branch review, Item 4): CPF explicitamente sobrescrito
+# no nó agent colide com o CPF de OUTRO agente na mesma empresa -> 409, não 500.
+# Diferente do cenário de CRECI duplicado acima: agent.py só tem UNIQUE(cpf, company_id)
+# como _sql_constraints (agent.py:218-224) -- não existe um @api.constrains Python
+# equivalente ao _check_creci_format para CPF, então essa colisão só é pega pelo
+# banco (psycopg2.IntegrityError/UniqueViolation), não por odoo.exceptions.ValidationError.
+# Antes da correção, isso escapava do "except ValidationError" em invite_controller.py
+# e caía no "except Exception" genérico -> 500.
+CPF_COLLISION_PROFILE1_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"US026 Cpf Collision 1","company_id":'"${COMPANY_ID}"',"document":"03120823040","email":"us026_cpf_collision_1@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+CPF_COLLISION_PROFILE1_BODY=$(echo "$CPF_COLLISION_PROFILE1_RESPONSE" | sed '$d')
+CPF_COLLISION_PROFILE1_STATUS=$(echo "$CPF_COLLISION_PROFILE1_RESPONSE" | tail -n 1)
+assert_status "201" "$CPF_COLLISION_PROFILE1_STATUS" "profile creation for CPF collision scenario (agent 1)"
+CPF_COLLISION_PROFILE1_ID=$(echo "$CPF_COLLISION_PROFILE1_BODY" | jq -r '.id')
+
+# Invite 1 establishes the real (first) agent's cpf as 03120823040 -- same value as
+# profile 1's document, matching profile_api.py's auto-create default (cpf: profile.document,
+# profile_api.py:246), made explicit here via the agent node so the collision below is
+# unambiguous regardless of that default.
+CPF_COLLISION_FIRST_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"profile_id":'"${CPF_COLLISION_PROFILE1_ID}"',"agent":{"creci":"CRECI-SP 444444","cpf":"03120823040"}}')
+CPF_COLLISION_FIRST_INVITE_STATUS=$(echo "$CPF_COLLISION_FIRST_INVITE" | tail -n 1)
+assert_status "201" "$CPF_COLLISION_FIRST_INVITE_STATUS" "first invite establishes cpf=03120823040"
+
+# Profile 2: a DIFFERENT document (20700455957), so profile creation itself doesn't
+# 409 on its own document uniqueness before we even reach the invite step.
+CPF_COLLISION_PROFILE2_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"US026 Cpf Collision 2","company_id":'"${COMPANY_ID}"',"document":"20700455957","email":"us026_cpf_collision_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+CPF_COLLISION_PROFILE2_BODY=$(echo "$CPF_COLLISION_PROFILE2_RESPONSE" | sed '$d')
+CPF_COLLISION_PROFILE2_STATUS=$(echo "$CPF_COLLISION_PROFILE2_RESPONSE" | tail -n 1)
+assert_status "201" "$CPF_COLLISION_PROFILE2_STATUS" "profile creation for CPF collision scenario (agent 2)"
+CPF_COLLISION_PROFILE2_ID=$(echo "$CPF_COLLISION_PROFILE2_BODY" | jq -r '.id')
+
+# Invite 2 explicitly overrides agent.cpf to the SAME value as agent 1's cpf
+# (03120823040) -- must trigger UNIQUE(cpf, company_id) and return 409, not 500.
+CPF_COLLISION_SECOND_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"profile_id":'"${CPF_COLLISION_PROFILE2_ID}"',"agent":{"creci":"CRECI-SP 666666","cpf":"03120823040"}}')
+CPF_COLLISION_SECOND_INVITE_STATUS=$(echo "$CPF_COLLISION_SECOND_INVITE" | tail -n 1)
+assert_status "409" "$CPF_COLLISION_SECOND_INVITE_STATUS" "duplicate cpf override in same company returns 409 (not 500)"
+
+# Atomicidade (FR2.2): igual ao cenário de CRECI duplicado acima -- profile 2's invite
+# created a res.users row (create_user_from_profile succeeded) BEFORE
+# _upsert_agent_for_invite's write() tripped the DB-level UNIQUE(cpf, company_id)
+# constraint; no res.users row should remain for the failed invite.
+CPF_COLLISION_ATOMIC_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT COUNT(*) FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_cpf_collision_2@example.com';")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ "$(echo "$CPF_COLLISION_ATOMIC_CHECK" | tr -d '[:space:]')" = "0" ]; then
+  echo "PASS: atomic rollback — no orphaned res.users left for agent 2 despite create_user_from_profile succeeding before the CPF constraint fired"
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+  echo "FAIL: atomic rollback — a res.users row exists for agent 2 despite the 409 (got count: $CPF_COLLISION_ATOMIC_CHECK)"
+  echo "  ACTION IF THIS FAILS: confirm request.env.cr.rollback() is still called in"
+  echo "  invite_controller.py's except psycopg2.IntegrityError block around _upsert_agent_for_invite."
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
 cleanup_test_data
 
 echo ""

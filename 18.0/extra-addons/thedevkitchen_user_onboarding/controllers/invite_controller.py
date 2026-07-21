@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
+import psycopg2
 from odoo import http
 from odoo.http import request, Response
 from odoo.exceptions import UserError, ValidationError
@@ -144,6 +145,29 @@ class InviteController(http.Controller):
                     # whole transaction so a failed agent link never leaves a partial state.
                     request.env.cr.rollback()
                     return self._error_response(409, "conflict", str(e))
+                except psycopg2.IntegrityError as e:
+                    # Review finding (final whole-branch review, Item 4): an explicit
+                    # agent.cpf override that collides with a DIFFERENT agent in the
+                    # same company fires the DB-level UNIQUE(cpf, company_id) constraint
+                    # (real_estate_agent_cpf_company_unique) as a raw psycopg2
+                    # IntegrityError/UniqueViolation, NOT odoo.exceptions.ValidationError
+                    # -- agent.py's _check_cpf_format only validates CPF *format*
+                    # (checksum), it never checks company-scoped uniqueness itself, so
+                    # this DB constraint is the only thing that catches the collision.
+                    # Without this except clause it fell through to the outer generic
+                    # `except Exception` below and surfaced as a 500, even though no
+                    # partial state is actually left (Odoo aborts the whole transaction
+                    # on a raised DB exception, so the rollback below is defense in
+                    # depth, not what actually prevents the partial commit).
+                    request.env.cr.rollback()
+                    error_msg = str(e)
+                    if "real_estate_agent_cpf_company_unique" in error_msg:
+                        message = (
+                            "An agent with this CPF already exists in this company"
+                        )
+                    else:
+                        message = "Data integrity error while linking agent"
+                    return self._error_response(409, "conflict", message)
                 agent_id = agent_record.id
 
             # Generate invite token

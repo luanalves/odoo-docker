@@ -18,20 +18,21 @@
             <field name="summary">Invite a new user to the platform</field>
             <field name="description">Sends an invitation email to a new user. Creates a pending user account with a secure invite token (UUID v4 → SHA-256).
 
-**This is a generic endpoint that invites ANY profile type** (`owner`, `director`, `manager`, `agent`, `prospector`, `receptionist`, `financial`, `legal`, `property_owner`, `tenant`) — the target profile (created beforehand via `POST /api/v1/profiles`) already carries all identity data (`name`, `document`/CPF, `email`, `phone`, `mobile`) shared by every profile type. `profile_id` is the only required field for all of them.
+**This is a generic endpoint that invites ANY profile type** (`owner`, `director`, `manager`, `agent`, `prospector`, `receptionist`, `financial`, `legal`, `property_owner`, `tenant`) — the target profile (created beforehand via `POST /api/v1/profiles`) already carries all identity data (`name`, `document`/CPF, `email`, `phone`, `mobile`) AND, for agent-typed profiles, the CRECI/bank/pix data too. `profile_id` is the ONLY field this request accepts, for every profile type, no exceptions.
 
-**⚠️ This is step 2 of 2 — you need a profile_id first.** `name`/`email`/`document` are NOT fields of this request; they are read from the profile created in step 1. Both steps shown together so the full flow is visible in one place:
+**⚠️ This is step 2 of 2 — you need a profile_id first.** Both steps shown together so the full flow is visible in one place:
 
-Step 1 — `POST /api/v1/profiles` (see that endpoint's own docs for the full contract):
+Step 1 — `POST /api/v1/profiles` (see that endpoint's own docs for the full contract, including the optional `creci`/`bank_name`/`bank_account`/`pix_key` fields for agent-typed profiles):
 ```
-{"name": "João Silva", "company_id": 5, "document": "12345678901", "email": "joao.silva@example.com", "phone": "+5511999998888", "birthdate": "1990-01-01", "profile_type_id": 4}
+{"name": "João Silva", "company_id": 5, "document": "12345678901", "email": "joao.silva@example.com", "phone": "+5511999998888", "birthdate": "1990-01-01", "profile_type_id": 4, "creci": "CRECI-SP 12345", "bank_name": "Banco do Brasil", "bank_account": "12345-6", "pix_key": "jane@example.com"}
 ```
-→ response includes `id` (the profile's id) — that becomes `profile_id` below.
+→ response includes `id` (the profile's id) — that becomes `profile_id` below. For agent-typed profiles it also includes `agent_id` (the already-created, already-complete real.estate.agent record, still missing only `user_id`).
 
 Step 2 — `POST /api/v1/users/invite` (this endpoint):
 ```
-{"profile_id": 17, "agent": {"creci": "CRECI-SP 12345", "bank_name": "Banco do Brasil", "bank_account": "12345-6", "pix_key": "jane@example.com"}}
+{"profile_id": 17}
 ```
+→ that's the entire body. When the profile's type is 'agent', this step links `user_id` (the new login's id) onto the real.estate.agent record created in step 1 -- it does not create, read, or modify creci/bank/pix data at all; those were already set in step 1.
 
 **Authorization Matrix:**
 - Owner → all 9 profiles
@@ -44,36 +45,22 @@ Step 2 — `POST /api/v1/users/invite` (this endpoint):
 - `X-Company-Id: {company_id}`
 
 **Required Fields:**
-- `profile_id`: ID of the target thedevkitchen.estate.profile record (integer) — works for any profile_type
-
-**Optional Fields (agent profile only):**
-- `agent`: Nested object with fields exclusive to the `real.estate.agent` domain record — `creci`, `bank_name`, `bank_account`, `pix_key` — none of which exist on `thedevkitchen.estate.profile`. Only read when the target profile's type is 'agent'; ignored (no-op) for every other profile_type. Identity fields (`name`, `cpf`, `email`, `phone`, `mobile`, `hire_date`) are NOT accepted here — they already live on the profile referenced by `profile_id`, which is shared by every profile type this endpoint invites, so there is no reason to re-supply or override them through this object. `company_id`/`user_id` are likewise never accepted — always server-derived (profile's company, and the new login's id, respectively).
+- `profile_id`: ID of the target thedevkitchen.estate.profile record (integer) — works for any profile_type. This is the only field the request body accepts; any other key is silently ignored, same as sending an unrecognized field to any other endpoint.
 
 **Error Responses:**
-- **400 Bad Request**: Invalid profile_id, missing fields, invalid agent data
+- **400 Bad Request**: Invalid or missing profile_id
 - **403 Forbidden**: Caller not authorized to invite target profile
-- **409 Conflict**: User with this email already exists
+- **404 Not Found**: profile_id does not exist
+- **409 Conflict**: Profile already has a linked user account, OR (agent profile_type, rare defensive-branch case) a data-integrity conflict linking the agent record
 
-Feature 026: when the target profile's type is 'agent', an optional nested 'agent' object may be supplied with the agent-exclusive fields (creci/bank/pix) that have no equivalent on the profile. company_id and user_id are never accepted in this object — always derived server-side. On success, the response includes agent_id and a 'links.agent' HATEOAS entry.</field>
+Feature 026 (corrected 2026-07-23): when the target profile's type is 'agent', this endpoint links the new login's user_id onto the real.estate.agent record that POST /api/v1/profiles already created (with creci/bank/pix already set, if provided there) -- it does not accept or touch any agent-specific field itself. On success, the response includes agent_id and a 'links.agent' HATEOAS entry.</field>
             <field name="request_schema"><![CDATA[
 {
   "type": "object",
   "title": "InviteUserRequest",
   "required": ["profile_id"],
   "properties": {
-    "profile_id": {"type": "integer", "example": 17, "description": "ID of an existing thedevkitchen.estate.profile record"},
-    "agent": {
-      "type": "object",
-      "title": "AgentInviteExtra",
-      "description": "Optional. Only used when the target profile's type is 'agent'; ignored for every other profile_type invited through this same endpoint. Contains ONLY fields exclusive to the real.estate.agent record that have no equivalent on the already-referenced profile (profile_id) -- identity fields (name/cpf/email/phone/mobile/hire_date) are intentionally NOT part of this object, since they already live on the profile shared by all profile types.",
-      "required": [],
-      "properties": {
-        "creci":        {"type": "string", "example": "CRECI-SP 12345"},
-        "bank_name":    {"type": "string", "example": "Banco do Brasil"},
-        "bank_account": {"type": "string", "example": "12345-6"},
-        "pix_key":      {"type": "string", "example": "jane@example.com"}
-      }
-    }
+    "profile_id": {"type": "integer", "example": 17, "description": "ID of an existing thedevkitchen.estate.profile record -- the only field this endpoint accepts, for any profile_type"}
   }
 }
 ]]></field>

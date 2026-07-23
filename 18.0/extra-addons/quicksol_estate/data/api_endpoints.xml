@@ -7185,17 +7185,21 @@ Optional fields:
 - mobile (string)
 - occupation (string)
 - hire_date (string, ISO date)
+- creci (string, min 4 chars, agent profile_type only): CRECI license number. No effect for any other profile_type.
+- bank_name (string, agent profile_type only)
+- bank_account (string, agent profile_type only)
+- pix_key (string, agent profile_type only)
 
 RBAC: the caller's role determines which profile_type_id values are accepted (403 otherwise) -- see GET /api/v1/profile-types and the invite authorization matrix (ADR-024) for the full role-to-profile-type mapping.
 
-Side effect: if profile_type_id resolves to code 'agent', a bare real.estate.agent record (profile_id set, user_id null) is auto-created in the same call -- POST /api/v1/users/invite later links (not duplicates) it to the new login.
+Side effect: if profile_type_id resolves to code 'agent', a real.estate.agent record is auto-created in the same call -- populated with creci/bank_name/bank_account/pix_key when provided (Feature 026, corrected 2026-07-23: these fields live here, at registration time, NOT on POST /api/v1/users/invite, since they don't depend on a login existing yet). profile_id is always set; user_id stays null until POST /api/v1/users/invite links it to the new login later (that endpoint only ever sets user_id -- it never touches creci/bank fields).
 
 Error Responses:
-- 400 Bad Request: schema validation failure, invalid document, invalid/inactive profile_type_id
+- 400 Bad Request: schema validation failure, invalid document, invalid/inactive profile_type_id, malformed creci
 - 403 Forbidden: company_id not accessible to caller, or role not allowed to create this profile_type_id
-- 409 Conflict: a profile with this (document, company_id, profile_type_id) already exists
+- 409 Conflict: a profile with this (document, company_id, profile_type_id) already exists, OR (agent profile_type) the creci is already registered to another active agent in this company
 
-Returns: profile object with id, name, document, email, profile_type, company_id, and HATEOAS links.</field>
+Returns: profile object with id, name, document, email, profile_type, company_id, agent_id (when profile_type is 'agent'), and HATEOAS links.</field>
             <field name="request_schema"><![CDATA[
 {
   "type": "object",
@@ -7211,7 +7215,11 @@ Returns: profile object with id, name, document, email, profile_type, company_id
     "phone":           {"type": "string", "example": "1130000000"},
     "mobile":          {"type": "string", "example": "11999998888"},
     "occupation":      {"type": "string", "example": "Corretor"},
-    "hire_date":       {"type": "string", "format": "date", "example": "2026-01-15"}
+    "hire_date":       {"type": "string", "format": "date", "example": "2026-01-15"},
+    "creci":           {"type": "string", "example": "CRECI-SP 12345", "description": "Agent profile_type only -- no effect otherwise"},
+    "bank_name":       {"type": "string", "example": "Banco do Brasil", "description": "Agent profile_type only -- no effect otherwise"},
+    "bank_account":    {"type": "string", "example": "12345-6", "description": "Agent profile_type only -- no effect otherwise"},
+    "pix_key":         {"type": "string", "example": "joao.silva@example.com", "description": "Agent profile_type only -- no effect otherwise"}
   }
 }
 ]]></field>
@@ -7234,6 +7242,7 @@ Returns: profile object with id, name, document, email, profile_type, company_id
     "company_id":        {"type": "integer", "example": 5},
     "company_name":      {"type": "string", "example": "Imobiliária Seed"},
     "partner_id":        {"type": ["integer", "null"]},
+    "agent_id":          {"type": "integer", "example": 88, "description": "Only present when profile_type is 'agent' -- id of the auto-created real.estate.agent record"},
     "active":            {"type": "boolean", "example": true}
   }
 }

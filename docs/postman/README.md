@@ -4,17 +4,23 @@
 
 Complete Postman collection for Quicksol Real Estate Management System API.
 
-**Version:** 1.38.0
+**Version:** 1.39.0
 **Last Updated:** 2026-07-23
 **Spec Coverage:** Complete API (55+ endpoints)
 
 ## Available Collections
 
-### 1. Complete API Collection (v1.38) ⭐ RECOMMENDED
+### 1. Complete API Collection (v1.39) ⭐ RECOMMENDED
+**File:** `quicksol_api_v1.39_postman_collection.json`
+**Coverage:** All 55+ endpoints - Complete API coverage
+**ADR Compliance:** ADR-016 (complete)
+**Note:** `Invite User`'s `agent` object example corrected — it only contains fields exclusive to the agent record (`creci`, `bank_name`, `bank_account`, `pix_key`); identity fields (`name`/`cpf`/`email`/`phone`/`mobile`/`hire_date`) already come from the referenced profile and are no longer part of this object.
+
+### 1. Complete API Collection (v1.38)
 **File:** `quicksol_api_v1.38_postman_collection.json`
 **Coverage:** All 55+ endpoints - Complete API coverage
 **ADR Compliance:** ADR-016 (complete)
-**Note:** `POST /api/v1/agents` (legacy `Create Agent` request) removed — physically removed from the API (Feature 026, User Story 3). `Invite User` in "2. User Invitation" is now the only way to onboard an agent (full field parity with the old `create_agent` payload via the nested `agent` object, since v1.36/v1.37).
+**Note:** `POST /api/v1/agents` (legacy `Create Agent` request) removed — physically removed from the API (Feature 026, User Story 3).
 
 ### 1. Complete API Collection (v1.35)
 **File:** `quicksol_api_v1.35_postman_collection.json`
@@ -74,12 +80,19 @@ Complete Postman collection for Quicksol Real Estate Management System API.
 **Coverage:** Lead CRUD, conversions, statistics, multi-tenancy tests  
 **Feature:** 006-lead-management
 
-## Changelog v1.38 (Latest - 2026-07-23)
+## Changelog v1.39 (Latest - 2026-07-23)
+
+**`Invite User` example/description corrected — `agent` object scope**
+
+✅ Fixed a stale example that survived the v1.38 correction: the `agent` object's example body and description text still showed `name`/`cpf`/`email`/`phone`/`mobile`/`hire_date` as accepted fields. These already live on the profile referenced by `profile_id` (shared by every profile_type this endpoint invites) and are no longer part of the `agent` object's actual contract — only `creci`, `bank_name`, `bank_account`, `pix_key` are.
+✅ Removed a second stale claim in the same description: "external profiles (tenant, property_owner): creates dual record" — that code path (`create_portal_user`) is dead, never called; only agent-typed invites create a domain record alongside the login.
+
+## Changelog v1.38 (2026-07-23)
 
 **`POST /api/v1/agents` removed (Feature 026, User Story 3)**
 
 ✅ The legacy `Create Agent` request has been deleted from the "6. Agents" folder — the endpoint itself was physically removed from the API (no deprecation window, per explicit product decision recorded in `specs/026-user-agent-registration-unification/spec-idea.md`).
-✅ `Invite User` (in "2. User Invitation") is now the single, unified way to onboard an agent: it accepts the same full field set `create_agent` used to (`name`, `cpf`, `email`, `phone`, `mobile`, `creci`, `hire_date`, `bank_name`, `bank_account`, `pix_key`) via an optional nested `agent` object, plus links the resulting `real.estate.agent` record to both the profile and the new login.
+✅ `Invite User` (in "2. User Invitation") is now the single, unified way to onboard an agent, linking the resulting `real.estate.agent` record to both the profile and the new login.
 
 ## Changelog v1.35 (2026-07-09)
 

@@ -20,6 +20,19 @@
 
 **This is a generic endpoint that invites ANY profile type** (`owner`, `director`, `manager`, `agent`, `prospector`, `receptionist`, `financial`, `legal`, `property_owner`, `tenant`) — the target profile (created beforehand via `POST /api/v1/profiles`) already carries all identity data (`name`, `document`/CPF, `email`, `phone`, `mobile`) shared by every profile type. `profile_id` is the only required field for all of them.
 
+**⚠️ This is step 2 of 2 — you need a profile_id first.** `name`/`email`/`document` are NOT fields of this request; they are read from the profile created in step 1. Both steps shown together so the full flow is visible in one place:
+
+Step 1 — `POST /api/v1/profiles` (see that endpoint's own docs for the full contract):
+```
+{"name": "João Silva", "company_id": 5, "document": "12345678901", "email": "joao.silva@example.com", "phone": "+5511999998888", "birthdate": "1990-01-01", "profile_type_id": 4}
+```
+→ response includes `id` (the profile's id) — that becomes `profile_id` below.
+
+Step 2 — `POST /api/v1/users/invite` (this endpoint):
+```
+{"profile_id": 17, "agent": {"creci": "CRECI-SP 12345", "bank_name": "Banco do Brasil", "bank_account": "12345-6", "pix_key": "jane@example.com"}}
+```
+
 **Authorization Matrix:**
 - Owner → all 9 profiles
 - Manager → 5 operational profiles (agent, prospector, receptionist, financial, inspector)

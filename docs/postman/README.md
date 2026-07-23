@@ -4,13 +4,19 @@
 
 Complete Postman collection for Quicksol Real Estate Management System API.
 
-**Version:** 1.39.0
+**Version:** 1.40.0
 **Last Updated:** 2026-07-23
 **Spec Coverage:** Complete API (55+ endpoints)
 
 ## Available Collections
 
-### 1. Complete API Collection (v1.39) ⭐ RECOMMENDED
+### 1. Complete API Collection (v1.40) ⭐ RECOMMENDED
+**File:** `quicksol_api_v1.40_postman_collection.json`
+**Coverage:** All 55+ endpoints - Complete API coverage
+**ADR Compliance:** ADR-016 (complete)
+**Note:** `Invite User`'s description now shows the full 2-step flow side by side — `POST /api/v1/profiles` (with `name`/`email`/`document`) followed by `POST /api/v1/users/invite` (with `profile_id`) — so it's clear where the identity fields are entered, since they aren't part of the invite request itself.
+
+### 1. Complete API Collection (v1.39)
 **File:** `quicksol_api_v1.39_postman_collection.json`
 **Coverage:** All 55+ endpoints - Complete API coverage
 **ADR Compliance:** ADR-016 (complete)
@@ -80,7 +86,13 @@ Complete Postman collection for Quicksol Real Estate Management System API.
 **Coverage:** Lead CRUD, conversions, statistics, multi-tenancy tests  
 **Feature:** 006-lead-management
 
-## Changelog v1.39 (Latest - 2026-07-23)
+## Changelog v1.40 (Latest - 2026-07-23)
+
+**`Invite User` description now shows the full 2-step flow**
+
+✅ Added the "Create Profile" example (`name`/`email`/`document`/etc.) directly into `Invite User`'s description, right before its own example, so both steps of the onboarding flow are visible in one place without needing to jump to a different folder. Clarifies that identity fields are entered in step 1 (`POST /api/v1/profiles`), not in the invite request itself.
+
+## Changelog v1.39 (2026-07-23)
 
 **`Invite User` example/description corrected — `agent` object scope**
 

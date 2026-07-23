@@ -4,19 +4,19 @@
 
 Complete Postman collection for Quicksol Real Estate Management System API.
 
-**Version:** 1.40.0
+**Version:** 1.41.0
 **Last Updated:** 2026-07-23
 **Spec Coverage:** Complete API (55+ endpoints)
 
 ## Available Collections
 
-### 1. Complete API Collection (v1.40) ⭐ RECOMMENDED
-**File:** `quicksol_api_v1.40_postman_collection.json`
+### 1. Complete API Collection (v1.41) ⭐ RECOMMENDED
+**File:** `quicksol_api_v1.41_postman_collection.json`
 **Coverage:** All 55+ endpoints - Complete API coverage
 **ADR Compliance:** ADR-016 (complete)
-**Note:** `Invite User`'s description now shows the full 2-step flow side by side — `POST /api/v1/profiles` (with `name`/`email`/`document`) followed by `POST /api/v1/users/invite` (with `profile_id`) — so it's clear where the identity fields are entered, since they aren't part of the invite request itself.
+**Note:** Design correction (Feature 026) — agent-exclusive fields (`creci`/`bank_name`/`bank_account`/`pix_key`) moved from `Invite User` to `Create Profile`, since they don't depend on a login existing. `Invite User`'s body is now just `profile_id` + `session_id`, for every profile type.
 
-### 1. Complete API Collection (v1.39)
+### 1. Complete API Collection (v1.40)
 **File:** `quicksol_api_v1.39_postman_collection.json`
 **Coverage:** All 55+ endpoints - Complete API coverage
 **ADR Compliance:** ADR-016 (complete)
@@ -86,7 +86,13 @@ Complete Postman collection for Quicksol Real Estate Management System API.
 **Coverage:** Lead CRUD, conversions, statistics, multi-tenancy tests  
 **Feature:** 006-lead-management
 
-## Changelog v1.40 (Latest - 2026-07-23)
+## Changelog v1.41 (Latest - 2026-07-23)
+
+**Agent fields moved from `Invite User` to `Create Profile`**
+
+✅ Design correction (Feature 026, same day as v1.40): `creci`/`bank_name`/`bank_account`/`pix_key` don't depend on a login existing, so they were moved to `Create Profile` (they're set once, at registration time). `Invite User`'s request body is now just `profile_id` + `session_id` — the same, minimal shape for every profile type, agent included. `Invite User`'s description still shows both steps side by side, updated to reflect where the agent fields actually go now.
+
+## Changelog v1.40 (2026-07-23)
 
 **`Invite User` description now shows the full 2-step flow**
 

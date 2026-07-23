@@ -54,24 +54,40 @@ class SchemaValidator:
         },
     }
 
-    # Feature 026: agent invite schema — paridade total com AGENT_CREATE_SCHEMA,
-    # exceto company_id/user_id (sempre derivados no servidor, ver invite_controller.py)
+    # Feature 026 (corrigido): agent invite schema — apenas os campos EXCLUSIVOS
+    # de agente que não existem no perfil já vinculado (profile_id). name/cpf/
+    # email/phone/mobile/hire_date NÃO fazem parte deste nó: todos esses já
+    # vêm do thedevkitchen.estate.profile referenciado por profile_id (o "nó
+    # principal" do convite), que é compartilhado por TODOS os profile_type
+    # convidados via este mesmo endpoint (owner, director, manager, agent,
+    # prospector, receptionist, financial, legal, property_owner, tenant) —
+    # não faz sentido documentá-los/aceitá-los de novo dentro de "agent".
+    # company_id/user_id continuam de fora (sempre derivados no servidor, ver
+    # invite_controller.py).
     AGENT_INVITE_SCHEMA = {
         "required": [],
         "optional": [
-            "name",
-            "cpf",
-            "email",
-            "phone",
-            "mobile",
             "creci",
-            "hire_date",
             "bank_name",
             "bank_account",
             "pix_key",
         ],
-        "types": AGENT_CREATE_SCHEMA["types"],
-        "constraints": AGENT_CREATE_SCHEMA["constraints"],
+        # Only the types/constraints for the fields this node actually
+        # accepts -- filtered from AGENT_CREATE_SCHEMA (not copied/rewritten)
+        # so the shared "creci" constraint still can't silently diverge
+        # between the two schemas, but name/cpf/email/phone/mobile/hire_date
+        # are no longer validated here at all, since this node doesn't
+        # accept them anymore.
+        "types": {
+            k: v
+            for k, v in AGENT_CREATE_SCHEMA["types"].items()
+            if k in {"creci", "bank_name", "bank_account", "pix_key"}
+        },
+        "constraints": {
+            k: v
+            for k, v in AGENT_CREATE_SCHEMA["constraints"].items()
+            if k in {"creci", "bank_name", "bank_account", "pix_key"}
+        },
     }
 
     # Agent update schema

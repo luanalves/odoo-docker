@@ -250,15 +250,21 @@ class InviteController(http.Controller):
         UNIQUE(cpf, company_id); searching by profile_id first avoids that.
         Raises ValidationError on CRECI/user_id conflicts -- the caller is
         responsible for rolling back the transaction (FR2.2) before returning.
+
+        Only agent-exclusive fields are accepted from `agent_payload` --
+        name/cpf/email/phone/mobile/hire_date are NOT read here (corrected):
+        all six already live on the invited profile (profile_record), which
+        is the same generic identity source every profile_type invited
+        through this endpoint shares. Re-accepting them here would let a
+        caller override the profile's own identity data through a side
+        channel that only exists for the agent branch, and doesn't match how
+        any other profile_type is invited via this endpoint. Only creci and
+        the bank/pix fields have no equivalent anywhere on
+        thedevkitchen.estate.profile -- those are the only fields genuinely
+        exclusive to the agent record.
         """
         allowed_agent_keys = {
-            "name",
-            "cpf",
-            "email",
-            "phone",
-            "mobile",
             "creci",
-            "hire_date",
             "bank_name",
             "bank_account",
             "pix_key",

@@ -308,66 +308,75 @@ else
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Cenário (final whole-branch review, Item 4): CPF explicitamente sobrescrito
-# no nó agent colide com o CPF de OUTRO agente na mesma empresa -> 409, não 500.
-# Diferente do cenário de CRECI duplicado acima: agent.py só tem UNIQUE(cpf, company_id)
-# como _sql_constraints (agent.py:218-224) -- não existe um @api.constrains Python
-# equivalente ao _check_creci_format para CPF, então essa colisão só é pega pelo
-# banco (psycopg2.IntegrityError/UniqueViolation), não por odoo.exceptions.ValidationError.
-# Antes da correção, isso escapava do "except ValidationError" em invite_controller.py
-# e caía no "except Exception" genérico -> 500.
-CPF_COLLISION_PROFILE1_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
+# --- Cenário CPF colidindo, sem depender de override no nó agent (correção:
+# name/cpf/email/phone/mobile/hire_date saíram do nó agent -- ver schema.py e
+# invite_controller.py's allowed_agent_keys) ---
+# O agent.py só tem UNIQUE(cpf, company_id) como _sql_constraints
+# (agent.py:218-224) -- não existe um @api.constrains Python equivalente ao
+# _check_creci_format para CPF, então essa colisão só é pega pelo banco
+# (psycopg2.IntegrityError/UniqueViolation), não por odoo.exceptions.ValidationError.
+# Sem a possibilidade de sobrescrever agent.cpf via API (removida por
+# instrução do solicitante -- cpf já vem do profile, "nó principal"), a única
+# forma de forçar essa colisão hoje é semear uma linha real_estate_agent
+# legada diretamente via SQL (simulando um registro pré-existente fora do
+# fluxo desta feature, já que POST /api/v1/agents também foi removido) e
+# então convidar um perfil cujo document (fonte do cpf via setdefault)
+# coincide com essa linha legada -- profile.document é único por empresa,
+# mas essa unicidade é uma tabela diferente de real_estate_agent.cpf, então
+# nada impede a coincidência entre as duas.
+CPF_COLLISION_PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Cpf Collision 1","company_id":'"${COMPANY_ID}"',"document":"03120823040","email":"us026_cpf_collision_1@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-CPF_COLLISION_PROFILE1_BODY=$(echo "$CPF_COLLISION_PROFILE1_RESPONSE" | sed '$d')
-CPF_COLLISION_PROFILE1_STATUS=$(echo "$CPF_COLLISION_PROFILE1_RESPONSE" | tail -n 1)
-assert_status "201" "$CPF_COLLISION_PROFILE1_STATUS" "profile creation for CPF collision scenario (agent 1)"
-CPF_COLLISION_PROFILE1_ID=$(echo "$CPF_COLLISION_PROFILE1_BODY" | jq -r '.id')
+  -d '{"name":"US026 Cpf Collision","company_id":'"${COMPANY_ID}"',"document":"03120823040","email":"us026_cpf_collision@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+CPF_COLLISION_PROFILE_BODY=$(echo "$CPF_COLLISION_PROFILE_RESPONSE" | sed '$d')
+CPF_COLLISION_PROFILE_STATUS=$(echo "$CPF_COLLISION_PROFILE_RESPONSE" | tail -n 1)
+assert_status "201" "$CPF_COLLISION_PROFILE_STATUS" "profile creation for CPF collision scenario"
+CPF_COLLISION_PROFILE_ID=$(echo "$CPF_COLLISION_PROFILE_BODY" | jq -r '.id')
 
-# Invite 1 establishes the real (first) agent's cpf as 03120823040 -- same value as
-# profile 1's document, matching profile_api.py's auto-create default (cpf: profile.document,
-# profile_api.py:246), made explicit here via the agent node so the collision below is
-# unambiguous regardless of that default.
-CPF_COLLISION_FIRST_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
+# profile_api.py's own auto-create (Feature 010, out of scope for this
+# feature) already created a bare real_estate_agent for this profile with
+# cpf=03120823040 -- delete it so we can seed a DIFFERENT, unrelated legacy
+# agent with the SAME cpf in the same company without hitting the collision
+# at seed time itself.
+docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
+  "DELETE FROM real_estate_agent WHERE profile_id = ${CPF_COLLISION_PROFILE_ID};" >/dev/null 2>&1
+
+# Seed a legacy real_estate_agent row (no profile_id/user_id -- simulating
+# data that predates this feature) with the SAME cpf, same company.
+docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
+  "INSERT INTO real_estate_agent (company_id, name, cpf, hire_date, active) VALUES (${COMPANY_ID}, 'US026 Legacy Agent Cpf Collision', '03120823040', '2020-01-01', true);" >/dev/null 2>&1
+
+# Invite the profile -- the defensive create() branch of _upsert_agent_for_invite
+# fires (no bare agent left for this profile_id after the delete above), and
+# real.estate.agent.create()'s setdefault() fills cpf from profile.document
+# (03120823040), colliding with the legacy row above -> 409, not 500.
+CPF_COLLISION_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${CPF_COLLISION_PROFILE1_ID}"',"agent":{"creci":"CRECI-SP 444444","cpf":"03120823040"}}')
-CPF_COLLISION_FIRST_INVITE_STATUS=$(echo "$CPF_COLLISION_FIRST_INVITE" | tail -n 1)
-assert_status "201" "$CPF_COLLISION_FIRST_INVITE_STATUS" "first invite establishes cpf=03120823040"
+  -d '{"profile_id":'"${CPF_COLLISION_PROFILE_ID}"',"agent":{"creci":"CRECI-SP 666666"}}')
+CPF_COLLISION_INVITE_STATUS=$(echo "$CPF_COLLISION_INVITE" | tail -n 1)
+assert_status "409" "$CPF_COLLISION_INVITE_STATUS" "cpf collision against a legacy agent row returns 409 (not 500)"
 
-# Profile 2: a DIFFERENT document (20700455957), so profile creation itself doesn't
-# 409 on its own document uniqueness before we even reach the invite step.
-CPF_COLLISION_PROFILE2_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
-  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Cpf Collision 2","company_id":'"${COMPANY_ID}"',"document":"20700455957","email":"us026_cpf_collision_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-CPF_COLLISION_PROFILE2_BODY=$(echo "$CPF_COLLISION_PROFILE2_RESPONSE" | sed '$d')
-CPF_COLLISION_PROFILE2_STATUS=$(echo "$CPF_COLLISION_PROFILE2_RESPONSE" | tail -n 1)
-assert_status "201" "$CPF_COLLISION_PROFILE2_STATUS" "profile creation for CPF collision scenario (agent 2)"
-CPF_COLLISION_PROFILE2_ID=$(echo "$CPF_COLLISION_PROFILE2_BODY" | jq -r '.id')
-
-# Invite 2 explicitly overrides agent.cpf to the SAME value as agent 1's cpf
-# (03120823040) -- must trigger UNIQUE(cpf, company_id) and return 409, not 500.
-CPF_COLLISION_SECOND_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
-  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${CPF_COLLISION_PROFILE2_ID}"',"agent":{"creci":"CRECI-SP 666666","cpf":"03120823040"}}')
-CPF_COLLISION_SECOND_INVITE_STATUS=$(echo "$CPF_COLLISION_SECOND_INVITE" | tail -n 1)
-assert_status "409" "$CPF_COLLISION_SECOND_INVITE_STATUS" "duplicate cpf override in same company returns 409 (not 500)"
-
-# Atomicidade (FR2.2): igual ao cenário de CRECI duplicado acima -- profile 2's invite
-# created a res.users row (create_user_from_profile succeeded) BEFORE
-# _upsert_agent_for_invite's write() tripped the DB-level UNIQUE(cpf, company_id)
-# constraint; no res.users row should remain for the failed invite.
+# Atomicidade (FR2.2): create_user_from_profile succeeded (creating a
+# res.users row) BEFORE _upsert_agent_for_invite's create() tripped the
+# DB-level UNIQUE(cpf, company_id) constraint; no res.users row should
+# remain for the failed invite.
 CPF_COLLISION_ATOMIC_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
-  "SELECT COUNT(*) FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_cpf_collision_2@example.com';")
+  "SELECT COUNT(*) FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_cpf_collision@example.com';")
 TESTS_RUN=$((TESTS_RUN + 1))
 if [ "$(echo "$CPF_COLLISION_ATOMIC_CHECK" | tr -d '[:space:]')" = "0" ]; then
-  echo "PASS: atomic rollback — no orphaned res.users left for agent 2 despite create_user_from_profile succeeding before the CPF constraint fired"
+  echo "PASS: atomic rollback — no orphaned res.users left despite create_user_from_profile succeeding before the CPF constraint fired"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
-  echo "FAIL: atomic rollback — a res.users row exists for agent 2 despite the 409 (got count: $CPF_COLLISION_ATOMIC_CHECK)"
+  echo "FAIL: atomic rollback — a res.users row exists despite the 409 (got count: $CPF_COLLISION_ATOMIC_CHECK)"
   echo "  ACTION IF THIS FAILS: confirm request.env.cr.rollback() is still called in"
   echo "  invite_controller.py's except psycopg2.IntegrityError block around _upsert_agent_for_invite."
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
+
+# Clean up the seeded legacy agent row (not covered by cleanup_test_data's
+# email-based WHERE clauses, since it has no profile_id/user_id linking it
+# to a us026_%@example.com row).
+docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
+  "DELETE FROM real_estate_agent WHERE cpf = '03120823040' AND company_id = ${COMPANY_ID};" >/dev/null 2>&1
 
 cleanup_test_data
 

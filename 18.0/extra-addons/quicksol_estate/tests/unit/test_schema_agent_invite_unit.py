@@ -19,16 +19,10 @@ from odoo.addons.quicksol_estate.controllers.utils.schema import SchemaValidator
 
 
 class TestSchemaAgentInvite(unittest.TestCase):
-    def test_full_field_parity_payload_is_valid(self):
-        """Paridade total: todos os 10 campos de AGENT_CREATE_SCHEMA (menos company_id) são aceitos"""
+    def test_agent_exclusive_fields_payload_is_valid(self):
+        """Apenas os campos EXCLUSIVOS de agente (sem equivalente no perfil) são aceitos"""
         payload = {
-            "name": "Jane Agent",
-            "cpf": "12345678901",
-            "email": "jane@example.com",
-            "phone": "1130000000",
-            "mobile": "11999998888",
             "creci": "CRECI-SP 12345",
-            "hire_date": "2026-01-01",
             "bank_name": "Banco do Brasil",
             "bank_account": "12345-6",
             "pix_key": "jane@example.com",
@@ -38,27 +32,25 @@ class TestSchemaAgentInvite(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_empty_payload_is_valid(self):
-        """Nada é obrigatório — todos os campos de identidade caem no fallback do perfil (FR1.4c)"""
+        """Nada é obrigatório — o registro de agente usa o perfil vinculado (FR1.4c)"""
         is_valid, errors = SchemaValidator.validate_agent_invite({})
         self.assertTrue(is_valid, errors)
 
-    def test_name_length_constraint_rejects_short_name(self):
-        """agent.name fora de 3-255 chars -> inválido, mesma regra de create_agent"""
-        is_valid, errors = SchemaValidator.validate_agent_invite({"name": "Jo"})
-        self.assertFalse(is_valid)
-        self.assertTrue(any("name" in e for e in errors))
-
-    def test_cpf_digit_count_constraint_rejects_invalid_cpf(self):
-        """agent.cpf sem 11 dígitos -> inválido, mesma regra de create_agent"""
-        is_valid, errors = SchemaValidator.validate_agent_invite({"cpf": "123"})
-        self.assertFalse(is_valid)
-        self.assertTrue(any("cpf" in e for e in errors))
-
-    def test_email_format_constraint_rejects_invalid_email(self):
-        """agent.email sem @/. -> inválido, mesma regra de create_agent"""
-        is_valid, errors = SchemaValidator.validate_agent_invite({"email": "not-an-email"})
-        self.assertFalse(is_valid)
-        self.assertTrue(any("email" in e for e in errors))
+    def test_identity_fields_are_not_validated_here(self):
+        """name/cpf/email/phone/mobile/hire_date não fazem mais parte deste nó (já vêm
+        do perfil, compartilhado por todo profile_type convidado por este endpoint) —
+        mesmo valores mal formados nessas chaves não geram erro de schema aqui, porque
+        o schema simplesmente não as reconhece/valida mais (o controller as ignora)."""
+        is_valid, errors = SchemaValidator.validate_agent_invite(
+            {
+                "name": "Jo",  # curto demais para AGENT_CREATE_SCHEMA, mas irrelevante aqui
+                "cpf": "123",  # inválido para AGENT_CREATE_SCHEMA, mas irrelevante aqui
+                "email": "not-an-email",  # inválido, mas irrelevante aqui
+                "hire_date": "2026-01-01",
+            }
+        )
+        self.assertTrue(is_valid, errors)
+        self.assertEqual(errors, [])
 
     def test_creci_length_constraint_rejects_short_creci(self):
         """agent.creci com menos de 4 chars -> inválido, mesma regra de create_agent"""
@@ -68,19 +60,24 @@ class TestSchemaAgentInvite(unittest.TestCase):
 
     def test_company_id_and_user_id_keys_do_not_cause_validation_failure(self):
         """FR1.4b: se o cliente enviar company_id/user_id, o schema NÃO rejeita
-        (a barreira real é o filtro allowed_keys no controller, Task 4) —
+        (a barreira real é o filtro allowed_keys no controller) —
         aqui confirmamos apenas que a presença dessas chaves não gera 400."""
         is_valid, errors = SchemaValidator.validate_agent_invite(
-            {"name": "Valid Name", "company_id": 999, "user_id": 5}
+            {"creci": "CRECI-SP 12345", "company_id": 999, "user_id": 5}
         )
         self.assertTrue(is_valid, errors)
 
-    def test_constraints_are_the_same_object_as_agent_create_schema(self):
-        """Reaproveitamento por referência (não cópia) — evita divergência silenciosa"""
+    def test_creci_constraint_is_the_same_function_as_agent_create_schema(self):
+        """Reaproveitamento por referência (não cópia) da regra de creci especificamente
+        -- evita divergência silenciosa entre os dois schemas. name/cpf/email não são
+        mais compartilhados aqui, já que este nó não os aceita."""
         self.assertIs(
-            SchemaValidator.AGENT_INVITE_SCHEMA["constraints"],
-            SchemaValidator.AGENT_CREATE_SCHEMA["constraints"],
+            SchemaValidator.AGENT_INVITE_SCHEMA["constraints"]["creci"],
+            SchemaValidator.AGENT_CREATE_SCHEMA["constraints"]["creci"],
         )
+        self.assertNotIn("name", SchemaValidator.AGENT_INVITE_SCHEMA["constraints"])
+        self.assertNotIn("cpf", SchemaValidator.AGENT_INVITE_SCHEMA["constraints"])
+        self.assertNotIn("email", SchemaValidator.AGENT_INVITE_SCHEMA["constraints"])
 
 
 if __name__ == "__main__":

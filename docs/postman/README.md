@@ -4,13 +4,19 @@
 
 Complete Postman collection for Quicksol Real Estate Management System API.
 
-**Version:** 1.35.0
-**Last Updated:** 2026-07-09
+**Version:** 1.38.0
+**Last Updated:** 2026-07-23
 **Spec Coverage:** Complete API (55+ endpoints)
 
 ## Available Collections
 
-### 1. Complete API Collection (v1.35) ⭐ RECOMMENDED
+### 1. Complete API Collection (v1.38) ⭐ RECOMMENDED
+**File:** `quicksol_api_v1.38_postman_collection.json`
+**Coverage:** All 55+ endpoints - Complete API coverage
+**ADR Compliance:** ADR-016 (complete)
+**Note:** `POST /api/v1/agents` (legacy `Create Agent` request) removed — physically removed from the API (Feature 026, User Story 3). `Invite User` in "2. User Invitation" is now the only way to onboard an agent (full field parity with the old `create_agent` payload via the nested `agent` object, since v1.36/v1.37).
+
+### 1. Complete API Collection (v1.35)
 **File:** `quicksol_api_v1.35_postman_collection.json`
 **Coverage:** All 55+ endpoints - Complete API coverage
 **ADR Compliance:** ADR-016 (complete)
@@ -68,7 +74,14 @@ Complete Postman collection for Quicksol Real Estate Management System API.
 **Coverage:** Lead CRUD, conversions, statistics, multi-tenancy tests  
 **Feature:** 006-lead-management
 
-## Changelog v1.35 (Latest - 2026-07-09)
+## Changelog v1.38 (Latest - 2026-07-23)
+
+**`POST /api/v1/agents` removed (Feature 026, User Story 3)**
+
+✅ The legacy `Create Agent` request has been deleted from the "6. Agents" folder — the endpoint itself was physically removed from the API (no deprecation window, per explicit product decision recorded in `specs/026-user-agent-registration-unification/spec-idea.md`).
+✅ `Invite User` (in "2. User Invitation") is now the single, unified way to onboard an agent: it accepts the same full field set `create_agent` used to (`name`, `cpf`, `email`, `phone`, `mobile`, `creci`, `hire_date`, `bank_name`, `bank_account`, `pix_key`) via an optional nested `agent` object, plus links the resulting `real.estate.agent` record to both the profile and the new login.
+
+## Changelog v1.35 (2026-07-09)
 
 **Lead company isolation enforced (Feature 024)**
 

@@ -4341,38 +4341,6 @@ Use the `location_type_id` field when creating or updating properties.
             <field name="active" eval="True"/>
         </record>
 
-        <record id="api_endpoint_create_agent" model="thedevkitchen.api.endpoint">
-            <field name="name">Create Agent</field>
-            <field name="path">/api/v1/agents</field>
-            <field name="method">POST</field>
-            <field name="module_name">quicksol_estate</field>
-            <field name="protected" eval="True"/>
-            <field name="tags">Agents</field>
-            <field name="summary">Create a new agent</field>
-            <field name="description">Creates a new real estate agent with CRECI registration and commission configuration.
-
-Required fields:
-- name (string): Agent's full name (3-255 characters)
-- cpf (string): Brazilian CPF document (11 digits, format: 123.456.789-01 or 12345678901)
-- company_id (integer): ID of the real estate company the agent will belong to. Required for multi-tenancy.
-- email (string): Email address (must contain @ and .). Required for account activation email.
-
-Optional fields:
-- phone (string): Phone number
-- mobile (string): Mobile number
-- creci (string): CRECI registration number (minimum 4 characters, format: CRECI-SP 12345)
-- hire_date (string): Hire date in ISO format (YYYY-MM-DD)
-- bank_name (string): Bank name for commission payments
-- bank_account (string): Bank account number
-- pix_key (string): PIX key for payments
-
-RBAC: Only managers and admins can create agents.
-Multi-tenancy: Agent is linked to the specified company_id.
-
-Returns: Agent object with id, name, cpf, email, creci, company_id, company_name, and HATEOAS links.</field>
-            <field name="active" eval="True"/>
-        </record>
-
         <record id="api_endpoint_get_agent" model="thedevkitchen.api.endpoint">
             <field name="name">Get Agent</field>
             <field name="path">/api/v1/agents/{id}</field>

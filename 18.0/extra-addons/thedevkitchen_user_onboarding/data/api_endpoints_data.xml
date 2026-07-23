@@ -51,6 +51,7 @@ Feature 026: when the target profile's type is 'agent', an optional nested 'agen
       "type": "object",
       "title": "AgentInviteExtra",
       "description": "Optional. Only used when the target profile's type is 'agent'. Mirrors AGENT_CREATE_SCHEMA's full field set except company_id/user_id (always server-derived).",
+      "required": [],
       "properties": {
         "name":         {"type": "string", "example": "Jane Agent"},
         "cpf":          {"type": "string", "example": "12345678901"},

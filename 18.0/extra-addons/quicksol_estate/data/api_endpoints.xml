@@ -7152,5 +7152,264 @@ GET /api/v1/leads?state=qualified&budget_min=300000&budget_max=500000]]></field>
             <field name="active" eval="True"/>
         </record>
 
+        <!-- ========================================================
+             Profile Management Endpoints (Feature 010 unified profile,
+             previously never registered in this table; documentation
+             gap closed 2026-07-23. Every profile_type (owner, director,
+             manager, agent, prospector, receptionist, financial, legal,
+             tenant, property_owner) is created through this same
+             POST /api/v1/profiles before being invited via
+             POST /api/v1/users/invite.)
+             ======================================================== -->
+
+        <record id="api_endpoint_create_profile" model="thedevkitchen.api.endpoint">
+            <field name="name">Create Profile</field>
+            <field name="path">/api/v1/profiles</field>
+            <field name="method">POST</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">Create a profile for any user role (owner, agent, manager, tenant, etc.)</field>
+            <field name="description">Creates a thedevkitchen.estate.profile record for ANY profile_type (owner, director, manager, agent, prospector, receptionist, financial, legal, tenant, property_owner). This is the prerequisite step before inviting a login via POST /api/v1/users/invite, which only needs profile_id afterward.
+
+Required fields:
+- name (string): Full name
+- company_id (integer): Company the profile belongs to. Must be one of the caller's accessible companies.
+- document (string): CPF or CNPJ. Validated and normalized server-side.
+- email (string): Must contain '@' and '.'.
+- birthdate (string): Any non-empty string (ISO date recommended, e.g. YYYY-MM-DD).
+- profile_type_id (integer): FK to thedevkitchen.profile.type (NOT a string code) -- fetch valid values from GET /api/v1/profile-types first.
+
+Optional fields:
+- phone (string)
+- mobile (string)
+- occupation (string)
+- hire_date (string, ISO date)
+
+RBAC: the caller's role determines which profile_type_id values are accepted (403 otherwise) -- see GET /api/v1/profile-types and the invite authorization matrix (ADR-024) for the full role-to-profile-type mapping.
+
+Side effect: if profile_type_id resolves to code 'agent', a bare real.estate.agent record (profile_id set, user_id null) is auto-created in the same call -- POST /api/v1/users/invite later links (not duplicates) it to the new login.
+
+Error Responses:
+- 400 Bad Request: schema validation failure, invalid document, invalid/inactive profile_type_id
+- 403 Forbidden: company_id not accessible to caller, or role not allowed to create this profile_type_id
+- 409 Conflict: a profile with this (document, company_id, profile_type_id) already exists
+
+Returns: profile object with id, name, document, email, profile_type, company_id, and HATEOAS links.</field>
+            <field name="request_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "CreateProfileRequest",
+  "required": ["name", "company_id", "document", "email", "birthdate", "profile_type_id"],
+  "properties": {
+    "name":            {"type": "string", "example": "João Silva"},
+    "company_id":      {"type": "integer", "example": 5},
+    "document":        {"type": "string", "example": "12345678909", "description": "CPF or CNPJ, validated and normalized server-side"},
+    "email":           {"type": "string", "format": "email", "example": "joao.silva@example.com"},
+    "birthdate":       {"type": "string", "example": "1990-01-01"},
+    "profile_type_id": {"type": "integer", "example": 4, "description": "FK to thedevkitchen.profile.type -- fetch valid ids from GET /api/v1/profile-types"},
+    "phone":           {"type": "string", "example": "1130000000"},
+    "mobile":          {"type": "string", "example": "11999998888"},
+    "occupation":      {"type": "string", "example": "Corretor"},
+    "hire_date":       {"type": "string", "format": "date", "example": "2026-01-15"}
+  }
+}
+]]></field>
+            <field name="response_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "ProfileResponse",
+  "properties": {
+    "id":                {"type": "integer", "example": 17},
+    "name":              {"type": "string", "example": "João Silva"},
+    "document":          {"type": "string", "example": "12345678909"},
+    "email":             {"type": "string", "example": "joao.silva@example.com"},
+    "phone":             {"type": ["string", "null"]},
+    "mobile":            {"type": ["string", "null"]},
+    "occupation":        {"type": ["string", "null"]},
+    "birthdate":         {"type": ["string", "null"], "format": "date"},
+    "hire_date":         {"type": ["string", "null"], "format": "date"},
+    "profile_type":      {"type": "string", "example": "agent", "description": "profile_type code"},
+    "profile_type_name": {"type": "string", "example": "Corretor"},
+    "company_id":        {"type": "integer", "example": 5},
+    "company_name":      {"type": "string", "example": "Imobiliária Seed"},
+    "partner_id":        {"type": ["integer", "null"]},
+    "active":            {"type": "boolean", "example": true}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_list_profiles" model="thedevkitchen.api.endpoint">
+            <field name="name">List Profiles</field>
+            <field name="path">/api/v1/profiles</field>
+            <field name="method">GET</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">List profiles, optionally filtered by type/document/name</field>
+            <field name="description">Lists thedevkitchen.estate.profile records for the given companies, across any profile_type.
+
+Required query parameter:
+- company_ids (string): comma-separated company ids, e.g. "5" or "5,6"
+
+Optional query parameters:
+- profile_type (string): filter by profile_type code (e.g. "agent", "tenant")
+- document (string): filter by exact CPF/CNPJ (normalized before matching)
+- name (string): case-insensitive partial match
+- active (string): "true" or "false" (default: only active)
+- limit (integer, default 20, max 100)
+- offset (integer, default 0)
+
+Error Responses:
+- 400 Bad Request: missing/invalid company_ids, invalid profile_type
+- 403 Forbidden: a requested company_id is not accessible to the caller
+
+Returns: paginated list with HATEOAS next/prev links.</field>
+            <field name="response_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "ListProfilesResponse",
+  "properties": {
+    "success": {"type": "boolean", "example": true},
+    "data": {"type": "array", "items": {"type": "object"}},
+    "count": {"type": "integer", "example": 20},
+    "total": {"type": "integer", "example": 57},
+    "limit": {"type": "integer", "example": 20},
+    "offset": {"type": "integer", "example": 0}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_get_profile" model="thedevkitchen.api.endpoint">
+            <field name="name">Get Profile</field>
+            <field name="path">/api/v1/profiles/{id}</field>
+            <field name="method">GET</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">Get a single profile by id</field>
+            <field name="description">Fetches one thedevkitchen.estate.profile record, of any profile_type.
+
+**Path Parameter:**
+- id (integer): Profile id
+
+**Error Responses:**
+- 404 Not Found: profile not found, or belongs to a company the caller cannot access (anti-enumeration, ADR-008 -- does not reveal existence)</field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_update_profile" model="thedevkitchen.api.endpoint">
+            <field name="name">Update Profile</field>
+            <field name="path">/api/v1/profiles/{id}</field>
+            <field name="method">PUT</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">Update a profile's mutable fields</field>
+            <field name="description">Updates a thedevkitchen.estate.profile record, of any profile_type.
+
+**Mutable fields:** name, email, phone, mobile, occupation, birthdate, hire_date
+**Immutable fields (400 if present):** profile_type, company_id, document
+
+If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are also synced onto the linked real.estate.agent record.
+
+**Path Parameter:**
+- id (integer): Profile id
+
+**Error Responses:**
+- 400 Bad Request: schema validation failure, or an immutable field was included
+- 404 Not Found: profile not found, or belongs to an inaccessible company</field>
+            <field name="request_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "UpdateProfileRequest",
+  "required": [],
+  "properties": {
+    "name":       {"type": "string", "example": "João Silva Jr."},
+    "email":      {"type": "string", "format": "email", "example": "joao.jr@example.com"},
+    "phone":      {"type": "string"},
+    "mobile":     {"type": "string"},
+    "occupation": {"type": "string"},
+    "birthdate":  {"type": "string", "format": "date"},
+    "hire_date":  {"type": "string", "format": "date"}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_delete_profile" model="thedevkitchen.api.endpoint">
+            <field name="name">Deactivate Profile</field>
+            <field name="path">/api/v1/profiles/{id}</field>
+            <field name="method">DELETE</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">Soft-delete (deactivate) a profile</field>
+            <field name="description">Deactivates a thedevkitchen.estate.profile record (soft delete, ADR-015 -- `active=False`, never a hard delete). Cascades to the linked real.estate.agent (if profile_type is 'agent') and to any linked res.users login, deactivating both and invalidating active sessions.
+
+**Path Parameter:**
+- id (integer): Profile id
+
+**Optional body:**
+- reason (string): deactivation reason, stored for audit
+
+**Error Responses:**
+- 400 Bad Request: profile already inactive
+- 404 Not Found: profile not found, or belongs to an inaccessible company</field>
+            <field name="request_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "DeactivateProfileRequest",
+  "required": [],
+  "properties": {
+    "reason": {"type": "string", "example": "No longer with the company"}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_list_profile_types" model="thedevkitchen.api.endpoint">
+            <field name="name">List Profile Types</field>
+            <field name="path">/api/v1/profile-types</field>
+            <field name="method">GET</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">List all active profile types (id, code, name)</field>
+            <field name="description">Lists every active thedevkitchen.profile.type record. Use this to resolve the profile_type_id integer FK required by POST /api/v1/profiles -- `code` is the human-readable identifier (e.g. "agent", "tenant", "owner"), `id` is the actual value to send as profile_type_id.
+
+No query parameters. No filtering by code server-side -- fetch the full list and filter client-side.</field>
+            <field name="response_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "ListProfileTypesResponse",
+  "properties": {
+    "success": {"type": "boolean", "example": true},
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id":            {"type": "integer", "example": 4},
+          "code":          {"type": "string", "example": "agent"},
+          "name":          {"type": "string", "example": "Corretor"},
+          "level":         {"type": ["integer", "null"]},
+          "group_xml_id":  {"type": ["string", "null"], "example": "quicksol_estate.group_real_estate_agent"}
+        }
+      }
+    },
+    "count": {"type": "integer", "example": 10}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
     </data>
 </odoo>

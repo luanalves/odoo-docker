@@ -72,7 +72,7 @@ AGENT_PROFILE_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.
 # (invite_controller.py's _upsert_agent_for_invite links that same row + sets
 # user_id, per Tasks 4-6). ---
 PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Resend Agent","company_id":'"${COMPANY_ID}"',"document":"'"${TEST_CPF}"'","email":"'"${TEST_EMAIL}"'","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+  -d '{"name":"US026 Resend Agent","company_id":'"${COMPANY_ID}"',"document":"'"${TEST_CPF}"'","email":"'"${TEST_EMAIL}"'","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"',"creci":"CRECI-SP 444444"}')
 PROFILE_BODY=$(echo "$PROFILE_RESPONSE" | sed '$d')
 PROFILE_STATUS=$(echo "$PROFILE_RESPONSE" | tail -n 1)
 PROFILE_ID=$(echo "$PROFILE_BODY" | jq -r '.id')  # resposta flat, sem wrapper .data
@@ -90,8 +90,10 @@ else
   exit 1
 fi
 
+# Feature 026 (corrigido, 2026-07-23): creci vai no cadastro do perfil
+# acima, não mais no convite -- o nó `agent` foi removido do convite.
 INVITE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${PROFILE_ID}"',"agent":{"creci":"CRECI-SP 444444"}}')
+  -d '{"profile_id":'"${PROFILE_ID}"'}')
 INVITE_BODY=$(echo "$INVITE_RESPONSE" | sed '$d')
 INVITE_STATUS=$(echo "$INVITE_RESPONSE" | tail -n 1)
 USER_ID=$(echo "$INVITE_BODY" | jq -r '.data.id')

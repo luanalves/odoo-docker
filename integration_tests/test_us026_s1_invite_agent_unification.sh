@@ -1,7 +1,17 @@
 #!/bin/bash
 # integration_tests/test_us026_s1_invite_agent_unification.sh
-# Feature 026 — User Story 1: convite unificado cria real.estate.agent
-# vinculado a profile_id E user_id, com paridade total de campos.
+# Feature 026 (corrigido, 2026-07-23) — User Story 1: convite unificado
+# vincula user_id ao real.estate.agent que POST /api/v1/profiles já criou.
+#
+# CORREÇÃO DE ARQUITETURA (2026-07-23): campos exclusivos de agente
+# (creci/bank_name/bank_account/pix_key) foram MOVIDOS de POST /api/v1/
+# users/invite para POST /api/v1/profiles -- eles não dependem do login
+# existir, então não faz sentido esperar o convite para o agente nascer
+# completo. O nó `agent` foi REMOVIDO inteiramente do corpo do convite;
+# POST /api/v1/users/invite agora só aceita profile_id, igual para
+# qualquer profile_type. Este script foi reescrito para refletir isso --
+# os cenários de CRECI (formato inválido, duplicado) agora são testados
+# no CADASTRO do perfil, não no convite.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../18.0/.env" 2>/dev/null || true
@@ -38,23 +48,20 @@ assert_field_value() {
 }
 
 cleanup_test_data() {
-  # NOTE (found while adding Task 5 scenarios): real_estate_agent.profile_id and
-  # .user_id are both ondelete='restrict' FKs (confirmed via pg_constraint:
-  # confdeltype='r' on real_estate_agent_profile_id_fkey/real_estate_agent_user_id_fkey).
-  # Every scenario in this script creates an agent-type profile, which always ends up
-  # with a linked real_estate_agent row (auto-created by profile_api.py and/or
-  # upserted by the invite controller) -- so the two DELETEs below used to fail
-  # silently (stderr redirected to /dev/null) whenever a prior run's agent row was
-  # still around, leaving orphaned res_users/profile rows that then made the NEXT
-  # run's profile creation return 409 instead of 201. Deleting real_estate_agent
-  # first (scoped to both profile_id and user_id, since the two aren't always the
-  # same set after a failed/partial run) clears the FK block before the rest.
+  # real_estate_agent.profile_id/.user_id are both ondelete='restrict' FKs --
+  # delete agent rows first (scoped to both profile_id and user_id) to clear
+  # the FK block before deleting res_users/profiles from a prior run.
   docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
     "DELETE FROM real_estate_agent WHERE profile_id IN (SELECT id FROM thedevkitchen_estate_profile WHERE email LIKE 'us026_%@example.com') OR user_id IN (SELECT u.id FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email LIKE 'us026_%@example.com');" >/dev/null 2>&1
   docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
     "DELETE FROM res_users WHERE login LIKE 'us026_%@example.com';" >/dev/null 2>&1
   docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
     "DELETE FROM thedevkitchen_estate_profile WHERE email LIKE 'us026_%@example.com';" >/dev/null 2>&1
+  # Legacy agent row seeded (no profile_id/user_id) by the CPF-collision
+  # scenario further down -- not covered by the email-based WHERE clauses
+  # above.
+  docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
+    "DELETE FROM real_estate_agent WHERE cpf = '03120823040' AND profile_id IS NULL;" >/dev/null 2>&1
 }
 
 cleanup_test_data
@@ -69,23 +76,21 @@ LOGIN_RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/users/login" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${BEARER_TOKEN}" \
   -d "{\"login\":\"${TEST_USER_MANAGER}\",\"password\":\"${TEST_PASSWORD_MANAGER}\"}")
-# CORRIGIDO (achado 2026-07-19): a resposta de /api/v1/users/login NÃO tem wrapper .data —
-# os campos vêm direto na raiz, confirmado contra o container ao vivo e contra
-# test_us9_s6_resend_invite.sh (que já lê .session_id/.user.default_company_id sem .data).
 SESSION_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.session_id')
 COMPANY_ID=$(echo "$LOGIN_RESPONSE" | jq -r '.user.default_company_id')
 
 AUTH_HEADERS=(-H "Authorization: Bearer ${BEARER_TOKEN}" -H "X-Openerp-Session-Id: ${SESSION_ID}" -H "X-Company-ID: ${COMPANY_ID}")
 
-# --- Resolve o FK inteiro de profile_type_id (achado 2026-07-19: profile_api.py exige um
-# inteiro de thedevkitchen_profile_type.id, NÃO a string "agent" — profile_api.py:174-182) ---
+# --- Resolve o FK inteiro de profile_type_id (profile_api.py exige um
+# inteiro de thedevkitchen_profile_type.id, NÃO a string "agent") ---
 AGENT_PROFILE_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
   "SELECT id FROM thedevkitchen_profile_type WHERE code = 'agent' LIMIT 1;" | tr -d '[:space:]')
 
-# --- Cria o profile (pré-requisito — profile_id continua obrigatório, decisão confirmada).
-# NOTA: isso já dispara profile_api.py:236-255, que auto-cria um real_estate_agent para este
-# profile_id (sem user_id) — é exatamente esse registro que o convite abaixo deve vincular
-# (write), não duplicar (create). Ver o "Achado Crítico" no topo desta task. ---
+# ============================================================
+# Cenário 1: caminho feliz -- creci/bank fields no CADASTRO do
+# perfil, convite só com profile_id, real_estate_agent nasce
+# completo (profile_id + creci + bank) e ganha user_id no convite.
+# ============================================================
 PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{
@@ -94,45 +99,37 @@ PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profi
     "document": "39053344705",
     "email": "us026_agent_pending@example.com",
     "birthdate": "1990-01-01",
-    "profile_type_id": '"${AGENT_PROFILE_TYPE_ID}"'
+    "profile_type_id": '"${AGENT_PROFILE_TYPE_ID}"',
+    "creci": "CRECI-SP 999999",
+    "hire_date": "2026-01-15",
+    "bank_name": "Banco Teste",
+    "bank_account": "12345-6",
+    "pix_key": "us026_agent_pending@example.com"
   }')
 PROFILE_BODY=$(echo "$PROFILE_RESPONSE" | sed '$d')
 PROFILE_STATUS=$(echo "$PROFILE_RESPONSE" | tail -n 1)
-assert_status "201" "$PROFILE_STATUS" "profile creation"
-# NOTE: unlike the invite endpoint (which wraps in {"data": ...}), POST /api/v1/profiles
-# returns response.py's success_response(), which puts fields flat at the root (confirmed
-# live: GET /api/v1/profiles/<id> and POST both return {"id": ..., "name": ..., ...} with
-# no .data wrapper) — same class of discrepancy as the already-fixed login .data issue.
+assert_status "201" "$PROFILE_STATUS" "profile creation with creci/bank fields"
 PROFILE_ID=$(echo "$PROFILE_BODY" | jq -r '.id')
 
-# --- Confirma a premissa do achado: profile_api.py já criou um real_estate_agent órfão ---
-PRE_EXISTING_COUNT=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
-  "SELECT COUNT(*) FROM real_estate_agent WHERE profile_id = ${PROFILE_ID};" | tr -d '[:space:]')
+# --- Confirma: o real_estate_agent já nasce com creci preenchido, ANTES do convite ---
+PRE_INVITE_DB_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT profile_id, user_id, creci FROM real_estate_agent WHERE profile_id = ${PROFILE_ID};")
 TESTS_RUN=$((TESTS_RUN + 1))
-if [ "$PRE_EXISTING_COUNT" = "1" ]; then
-  echo "PASS: profile_api.py auto-created exactly 1 real_estate_agent row for this profile (as expected)"
+if echo "$PRE_INVITE_DB_CHECK" | grep -q "${PROFILE_ID}||CRECI-SP 999999"; then
+  echo "PASS: real_estate_agent already has profile_id + creci at profile-creation time, user_id still null"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
-  echo "FAIL: expected exactly 1 pre-existing real_estate_agent row, got $PRE_EXISTING_COUNT — the achado's premise may no longer hold, investigate before trusting the rest of this script"
+  echo "FAIL: real_estate_agent missing profile_id/creci right after profile creation (got: $PRE_INVITE_DB_CHECK)"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Convite com paridade total de campos no nó agent ---
+# --- Convite: só profile_id, sem nó agent nenhum ---
 INVITE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{
-    "profile_id": '"${PROFILE_ID}"',
-    "agent": {
-      "creci": "CRECI-SP 999999",
-      "hire_date": "2026-01-15",
-      "bank_name": "Banco Teste",
-      "bank_account": "12345-6",
-      "pix_key": "us026_agent_pending@example.com"
-    }
-  }')
+  -d '{"profile_id": '"${PROFILE_ID}"'}')
 INVITE_BODY=$(echo "$INVITE_RESPONSE" | sed '$d')
 INVITE_STATUS=$(echo "$INVITE_RESPONSE" | tail -n 1)
-assert_status "201" "$INVITE_STATUS" "invite with agent object"
+assert_status "201" "$INVITE_STATUS" "invite with only profile_id"
 assert_field_value "$INVITE_BODY" '.data.profile_id' "$PROFILE_ID" "response has profile_id"
 
 AGENT_ID=$(echo "$INVITE_BODY" | jq -r '.data.agent_id')
@@ -155,21 +152,20 @@ else
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Verifica no banco: profile_id E user_id ambos preenchidos no mesmo registro ---
+# --- Verifica no banco: profile_id, user_id E creci todos preenchidos no mesmo registro ---
 USER_ID=$(echo "$INVITE_BODY" | jq -r '.data.id')
 DB_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
   "SELECT profile_id, user_id, creci FROM real_estate_agent WHERE id = ${AGENT_ID};")
 TESTS_RUN=$((TESTS_RUN + 1))
 if echo "$DB_CHECK" | grep -q "${PROFILE_ID}|${USER_ID}|CRECI-SP 999999"; then
-  echo "PASS: real_estate_agent row has BOTH profile_id and user_id set, plus creci"
+  echo "PASS: real_estate_agent row has profile_id, user_id AND creci (set at profile creation, untouched by invite)"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
   echo "FAIL: real_estate_agent row missing profile_id/user_id/creci (got: $DB_CHECK)"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Confirma semântica de upsert: ainda existe SÓ 1 linha para este profile_id (write, não
-# um segundo create() duplicado) — e é a MESMA linha que profile_api.py já tinha criado ---
+# --- Confirma semântica de upsert: ainda existe SÓ 1 linha para este profile_id ---
 POST_INVITE_COUNT=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
   "SELECT COUNT(*) FROM real_estate_agent WHERE profile_id = ${PROFILE_ID};" | tr -d '[:space:]')
 TESTS_RUN=$((TESTS_RUN + 1))
@@ -177,99 +173,70 @@ if [ "$POST_INVITE_COUNT" = "1" ]; then
   echo "PASS: exactly 1 real_estate_agent row for this profile_id after invite (upsert, not duplicate create)"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
-  echo "FAIL: expected exactly 1 real_estate_agent row after invite, got $POST_INVITE_COUNT (duplicate create() instead of upsert write()?)"
+  echo "FAIL: expected exactly 1 real_estate_agent row after invite, got $POST_INVITE_COUNT"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Cenário: agent.creci mal formado -> 400, nenhum registro criado ---
+# ============================================================
+# Cenário 2: creci mal formado -> 400 NO CADASTRO DO PERFIL
+# (não mais no convite -- o nó agent do convite não existe mais).
+# ============================================================
 BAD_CRECI_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Bad Creci","company_id":'"${COMPANY_ID}"',"document":"52998224725","email":"us026_bad_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-BAD_CRECI_PROFILE_BODY=$(echo "$BAD_CRECI_RESPONSE" | sed '$d')
-BAD_CRECI_PROFILE_STATUS=$(echo "$BAD_CRECI_RESPONSE" | tail -n 1)
-assert_status "201" "$BAD_CRECI_PROFILE_STATUS" "profile creation for bad creci scenario"
-BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_PROFILE_BODY" | jq -r '.id')
+  -d '{"name":"US026 Bad Creci","company_id":'"${COMPANY_ID}"',"document":"52998224725","email":"us026_bad_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"',"creci":"ab"}')
+BAD_CRECI_STATUS=$(echo "$BAD_CRECI_RESPONSE" | tail -n 1)
+assert_status "400" "$BAD_CRECI_STATUS" "creci too short returns 400 at profile creation"
 
-INVALID_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
-  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${BAD_CRECI_PROFILE_ID}"',"agent":{"creci":"ab"}}')
-INVALID_INVITE_STATUS=$(echo "$INVALID_INVITE" | tail -n 1)
-assert_status "400" "$INVALID_INVITE_STATUS" "creci too short returns 400"
-
-# Atomicidade (FR2.2): nenhum res.users deve ter sido criado para este profile
-ATOMIC_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
-  "SELECT COUNT(*) FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_bad_creci@example.com';")
+# Atomicidade: nem o profile nem o agent devem ter sido criados
+BAD_CRECI_PROFILE_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT COUNT(*) FROM thedevkitchen_estate_profile WHERE email = 'us026_bad_creci@example.com';")
 TESTS_RUN=$((TESTS_RUN + 1))
-if [ "$(echo "$ATOMIC_CHECK" | tr -d '[:space:]')" = "0" ]; then
-  echo "PASS: atomic rollback — no res.users created after creci validation failure"
+if [ "$(echo "$BAD_CRECI_PROFILE_CHECK" | tr -d '[:space:]')" = "0" ]; then
+  echo "PASS: atomic rollback — no profile created after creci validation failure"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
-  echo "FAIL: atomic rollback — a res.users row exists despite the 400 (got count: $ATOMIC_CHECK)"
-  echo "  ACTION IF THIS FAILS: add request.env.cr.rollback() before the 409/400 return"
-  echo "  inside invite_controller.py's new agent-creation except block, then re-run."
+  echo "FAIL: atomic rollback — a profile row exists despite the 400 (got count: $BAD_CRECI_PROFILE_CHECK)"
+  echo "  ACTION IF THIS FAILS: confirm request.env.cr.rollback() is still called in"
+  echo "  profile_api.py's except ValidationError block."
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Cenário: CRECI duplicado na mesma empresa -> 409 ---
-# NOTE: brief's original CPFs for this pair (91129418804 / 74954510736) fail CPF
-# checksum validation (validators.validate_document via validate_docbr, confirmed
-# live: cpf.validate() returns False for both) -- profile creation would 400/409
-# on document validation before ever reaching the invite step. Replaced with
-# freshly generated, checksum-valid CPFs (confirmed cpf.validate()==True and no
-# collision with any existing profile under this test's company_id).
+# ============================================================
+# Cenário 3: CRECI duplicado na mesma empresa -> 409 NO CADASTRO
+# DO SEGUNDO PERFIL (não mais no convite).
+# ============================================================
 DUP_PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Dup Creci","company_id":'"${COMPANY_ID}"',"document":"15350946056","email":"us026_dup_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-DUP_PROFILE_BODY=$(echo "$DUP_PROFILE_RESPONSE" | sed '$d')
+  -d '{"name":"US026 Dup Creci","company_id":'"${COMPANY_ID}"',"document":"15350946056","email":"us026_dup_creci@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"',"creci":"CRECI-SP 555555"}')
 DUP_PROFILE_STATUS=$(echo "$DUP_PROFILE_RESPONSE" | tail -n 1)
-assert_status "201" "$DUP_PROFILE_STATUS" "profile creation for duplicate creci scenario (profile 1)"
-DUP_PROFILE_ID=$(echo "$DUP_PROFILE_BODY" | jq -r '.id')
-
-FIRST_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
-  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${DUP_PROFILE_ID}"',"agent":{"creci":"CRECI-SP 555555"}}')
-FIRST_INVITE_STATUS=$(echo "$FIRST_INVITE" | tail -n 1)
-assert_status "201" "$FIRST_INVITE_STATUS" "first invite establishes creci"
+assert_status "201" "$DUP_PROFILE_STATUS" "profile 1 creation establishes creci CRECI-SP 555555"
 
 DUP_PROFILE2_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Dup Creci 2","company_id":'"${COMPANY_ID}"',"document":"10433218100","email":"us026_dup_creci_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
-DUP_PROFILE2_BODY=$(echo "$DUP_PROFILE2_RESPONSE" | sed '$d')
+  -d '{"name":"US026 Dup Creci 2","company_id":'"${COMPANY_ID}"',"document":"10433218100","email":"us026_dup_creci_2@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"',"creci":"CRECI-SP 555555"}')
 DUP_PROFILE2_STATUS=$(echo "$DUP_PROFILE2_RESPONSE" | tail -n 1)
-assert_status "201" "$DUP_PROFILE2_STATUS" "profile creation for duplicate creci scenario (profile 2)"
-DUP_PROFILE2_ID=$(echo "$DUP_PROFILE2_BODY" | jq -r '.id')
+assert_status "409" "$DUP_PROFILE2_STATUS" "profile 2 creation with duplicate creci returns 409"
 
-DUP_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
-  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${DUP_PROFILE2_ID}"',"agent":{"creci":"CRECI-SP 555555"}}')
-DUP_INVITE_STATUS=$(echo "$DUP_INVITE" | tail -n 1)
-assert_status "409" "$DUP_INVITE_STATUS" "duplicate creci in same company returns 409"
-
-# Atomicidade (FR2.2): profile 2's invite created a res.users row (create_user_from_profile
-# succeeded) BEFORE _upsert_agent_for_invite's write() tripped the company-scoped CRECI
-# uniqueness constraint in agent.py's _check_creci_format -- this is the scenario that
-# actually exercises invite_controller.py's request.env.cr.rollback() (unlike the "bad
-# creci" scenario above, which fails schema validation before any res.users row is ever
-# created, so its atomicity check passes trivially and would not catch a deleted rollback).
-DUP_ATOMIC_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
-  "SELECT COUNT(*) FROM res_users u JOIN res_partner p ON u.partner_id = p.id WHERE p.email = 'us026_dup_creci_2@example.com';")
+# Atomicidade: profile 2 must not have been left behind despite the agent-level 409
+DUP_PROFILE2_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT COUNT(*) FROM thedevkitchen_estate_profile WHERE email = 'us026_dup_creci_2@example.com';")
 TESTS_RUN=$((TESTS_RUN + 1))
-if [ "$(echo "$DUP_ATOMIC_CHECK" | tr -d '[:space:]')" = "0" ]; then
-  echo "PASS: atomic rollback — no orphaned res.users left for profile 2 despite create_user_from_profile succeeding before the CRECI constraint fired"
+if [ "$(echo "$DUP_PROFILE2_CHECK" | tr -d '[:space:]')" = "0" ]; then
+  echo "PASS: atomic rollback — profile 2 not left behind despite the duplicate-creci 409"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
-  echo "FAIL: atomic rollback — a res.users row exists for profile 2 despite the 409 (got count: $DUP_ATOMIC_CHECK)"
-  echo "  ACTION IF THIS FAILS: confirm request.env.cr.rollback() is still called in"
-  echo "  invite_controller.py's except ValidationError block around _upsert_agent_for_invite."
+  echo "FAIL: atomic rollback — profile 2 row exists despite the 409 (got count: $DUP_PROFILE2_CHECK)"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Cenário: cliente envia company_id/user_id no nó agent -> ignorados silenciosamente ---
-# NOTE: brief's original CPF (74954510736) is also checksum-invalid, replaced for the
-# same reason as above (96001338914, confirmed valid and non-colliding).
+# ============================================================
+# Cenário 4: cliente envia profile_id inexistente/extra keys no
+# corpo do convite -- ignorados silenciosamente (o endpoint só
+# lê profile_id; qualquer outra chave é um no-op, igual antes).
+# ============================================================
 SPOOF_PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Spoof Test","company_id":'"${COMPANY_ID}"',"document":"96001338914","email":"us026_spoof@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+  -d '{"name":"US026 Spoof Test","company_id":'"${COMPANY_ID}"',"document":"96001338914","email":"us026_spoof@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"',"creci":"CRECI-SP 777777"}')
 SPOOF_PROFILE_BODY=$(echo "$SPOOF_PROFILE_RESPONSE" | sed '$d')
 SPOOF_PROFILE_STATUS=$(echo "$SPOOF_PROFILE_RESPONSE" | tail -n 1)
 assert_status "201" "$SPOOF_PROFILE_STATUS" "profile creation for spoofing scenario"
@@ -277,53 +244,28 @@ SPOOF_PROFILE_ID=$(echo "$SPOOF_PROFILE_BODY" | jq -r '.id')
 
 SPOOF_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${SPOOF_PROFILE_ID}"',"agent":{"company_id":999999,"user_id":999999,"creci":"CRECI-SP 777777"}}')
+  -d '{"profile_id":'"${SPOOF_PROFILE_ID}"',"company_id":999999,"user_id":999999}')
 SPOOF_STATUS=$(echo "$SPOOF_INVITE" | tail -n 1)
-assert_status "201" "$SPOOF_STATUS" "company_id/user_id in agent node do not cause a 400"
+assert_status "201" "$SPOOF_STATUS" "top-level company_id/user_id in invite body do not cause a 400 (silently ignored)"
 
 SPOOF_AGENT_ID=$(echo "$SPOOF_INVITE" | sed '$d' | jq -r '.data.agent_id')
 SPOOF_USER_ID=$(echo "$SPOOF_INVITE" | sed '$d' | jq -r '.data.id')
 SPOOF_DB_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
-  "SELECT company_id FROM real_estate_agent WHERE id = ${SPOOF_AGENT_ID};")
+  "SELECT company_id, user_id FROM real_estate_agent WHERE id = ${SPOOF_AGENT_ID};")
 TESTS_RUN=$((TESTS_RUN + 1))
-if [ "$(echo "$SPOOF_DB_CHECK" | tr -d '[:space:]')" = "${COMPANY_ID}" ]; then
-  echo "PASS: spoofed company_id (999999) ignored, real company_id (${COMPANY_ID}) persisted"
+if echo "$SPOOF_DB_CHECK" | grep -q "${COMPANY_ID}|${SPOOF_USER_ID}"; then
+  echo "PASS: spoofed company_id/user_id (999999) ignored -- real company_id (${COMPANY_ID}) and invited user_id (${SPOOF_USER_ID}) persisted"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else
-  echo "FAIL: company_id spoofing NOT blocked (got: $SPOOF_DB_CHECK, expected ${COMPANY_ID})"
+  echo "FAIL: company_id/user_id spoofing NOT blocked (got: $SPOOF_DB_CHECK, expected ${COMPANY_ID}|${SPOOF_USER_ID})"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
-# --- Parallel check (Minor finding #2): user_id in the agent node must also be ignored,
-# not just company_id -- persisted user_id must match the real invited user (SPOOF_USER_ID,
-# from the invite response's .data.id), not the spoofed 999999 ---
-SPOOF_USER_ID_DB_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
-  "SELECT user_id FROM real_estate_agent WHERE id = ${SPOOF_AGENT_ID};")
-TESTS_RUN=$((TESTS_RUN + 1))
-if [ "$(echo "$SPOOF_USER_ID_DB_CHECK" | tr -d '[:space:]')" = "${SPOOF_USER_ID}" ]; then
-  echo "PASS: spoofed user_id (999999) ignored, real invited user_id (${SPOOF_USER_ID}) persisted"
-  TESTS_PASSED=$((TESTS_PASSED + 1))
-else
-  echo "FAIL: user_id spoofing NOT blocked (got: $SPOOF_USER_ID_DB_CHECK, expected ${SPOOF_USER_ID})"
-  TESTS_FAILED=$((TESTS_FAILED + 1))
-fi
-
-# --- Cenário CPF colidindo, sem depender de override no nó agent (correção:
-# name/cpf/email/phone/mobile/hire_date saíram do nó agent -- ver schema.py e
-# invite_controller.py's allowed_agent_keys) ---
-# O agent.py só tem UNIQUE(cpf, company_id) como _sql_constraints
-# (agent.py:218-224) -- não existe um @api.constrains Python equivalente ao
-# _check_creci_format para CPF, então essa colisão só é pega pelo banco
-# (psycopg2.IntegrityError/UniqueViolation), não por odoo.exceptions.ValidationError.
-# Sem a possibilidade de sobrescrever agent.cpf via API (removida por
-# instrução do solicitante -- cpf já vem do profile, "nó principal"), a única
-# forma de forçar essa colisão hoje é semear uma linha real_estate_agent
-# legada diretamente via SQL (simulando um registro pré-existente fora do
-# fluxo desta feature, já que POST /api/v1/agents também foi removido) e
-# então convidar um perfil cujo document (fonte do cpf via setdefault)
-# coincide com essa linha legada -- profile.document é único por empresa,
-# mas essa unicidade é uma tabela diferente de real_estate_agent.cpf, então
-# nada impede a coincidência entre as duas.
+# ============================================================
+# Cenário 5: colisão de CPF contra um agente legado (sem
+# profile_id/user_id) -- exercita o ramo defensivo de create()
+# em _link_agent_to_invited_user, não a validação de creci.
+# ============================================================
 CPF_COLLISION_PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
   -d '{"name":"US026 Cpf Collision","company_id":'"${COMPANY_ID}"',"document":"03120823040","email":"us026_cpf_collision@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
@@ -332,11 +274,10 @@ CPF_COLLISION_PROFILE_STATUS=$(echo "$CPF_COLLISION_PROFILE_RESPONSE" | tail -n 
 assert_status "201" "$CPF_COLLISION_PROFILE_STATUS" "profile creation for CPF collision scenario"
 CPF_COLLISION_PROFILE_ID=$(echo "$CPF_COLLISION_PROFILE_BODY" | jq -r '.id')
 
-# profile_api.py's own auto-create (Feature 010, out of scope for this
-# feature) already created a bare real_estate_agent for this profile with
-# cpf=03120823040 -- delete it so we can seed a DIFFERENT, unrelated legacy
-# agent with the SAME cpf in the same company without hitting the collision
-# at seed time itself.
+# profile_api.py's own auto-create already created a bare real_estate_agent
+# for this profile with cpf=03120823040 -- delete it so we can seed a
+# DIFFERENT, unrelated legacy agent with the SAME cpf in the same company
+# without hitting the collision at seed time itself.
 docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
   "DELETE FROM real_estate_agent WHERE profile_id = ${CPF_COLLISION_PROFILE_ID};" >/dev/null 2>&1
 
@@ -345,18 +286,19 @@ docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U 
 docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
   "INSERT INTO real_estate_agent (company_id, name, cpf, hire_date, active) VALUES (${COMPANY_ID}, 'US026 Legacy Agent Cpf Collision', '03120823040', '2020-01-01', true);" >/dev/null 2>&1
 
-# Invite the profile -- the defensive create() branch of _upsert_agent_for_invite
-# fires (no bare agent left for this profile_id after the delete above), and
-# real.estate.agent.create()'s setdefault() fills cpf from profile.document
-# (03120823040), colliding with the legacy row above -> 409, not 500.
+# Invite the profile -- the defensive create() branch of
+# _link_agent_to_invited_user fires (no bare agent left for this profile_id
+# after the delete above), and real.estate.agent.create()'s setdefault()
+# fills cpf from profile.document (03120823040), colliding with the legacy
+# row above -> 409, not 500.
 CPF_COLLISION_INVITE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" \
   "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${CPF_COLLISION_PROFILE_ID}"',"agent":{"creci":"CRECI-SP 666666"}}')
+  -d '{"profile_id":'"${CPF_COLLISION_PROFILE_ID}"'}')
 CPF_COLLISION_INVITE_STATUS=$(echo "$CPF_COLLISION_INVITE" | tail -n 1)
 assert_status "409" "$CPF_COLLISION_INVITE_STATUS" "cpf collision against a legacy agent row returns 409 (not 500)"
 
 # Atomicidade (FR2.2): create_user_from_profile succeeded (creating a
-# res.users row) BEFORE _upsert_agent_for_invite's create() tripped the
+# res.users row) BEFORE _link_agent_to_invited_user's create() tripped the
 # DB-level UNIQUE(cpf, company_id) constraint; no res.users row should
 # remain for the failed invite.
 CPF_COLLISION_ATOMIC_CHECK=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
@@ -368,15 +310,9 @@ if [ "$(echo "$CPF_COLLISION_ATOMIC_CHECK" | tr -d '[:space:]')" = "0" ]; then
 else
   echo "FAIL: atomic rollback — a res.users row exists despite the 409 (got count: $CPF_COLLISION_ATOMIC_CHECK)"
   echo "  ACTION IF THIS FAILS: confirm request.env.cr.rollback() is still called in"
-  echo "  invite_controller.py's except psycopg2.IntegrityError block around _upsert_agent_for_invite."
+  echo "  invite_controller.py's except psycopg2.IntegrityError block around _link_agent_to_invited_user."
   TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
-
-# Clean up the seeded legacy agent row (not covered by cleanup_test_data's
-# email-based WHERE clauses, since it has no profile_id/user_id linking it
-# to a us026_%@example.com row).
-docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -c \
-  "DELETE FROM real_estate_agent WHERE cpf = '03120823040' AND company_id = ${COMPANY_ID};" >/dev/null 2>&1
 
 cleanup_test_data
 

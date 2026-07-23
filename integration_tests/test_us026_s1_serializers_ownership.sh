@@ -86,15 +86,17 @@ AGENT_PROFILE_TYPE_ID=$(docker compose -f "${COMPOSE_FILE}" exec -T db psql -U o
 # usados neste branch (39053344705, 10433218100, 96001338914, 52998224725,
 # 15350946056, 08386379499).
 PROFILE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"name":"US026 Ownership Agent","company_id":'"${COMPANY_ID}"',"document":"14546511051","email":"us026_ownership_agent@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"'}')
+  -d '{"name":"US026 Ownership Agent","company_id":'"${COMPANY_ID}"',"document":"14546511051","email":"us026_ownership_agent@example.com","birthdate":"1990-01-01","profile_type_id":'"${AGENT_PROFILE_TYPE_ID}"',"creci":"CRECI-SP 222222"}')
 PROFILE_BODY=$(echo "$PROFILE_RESPONSE" | sed '$d')
 PROFILE_STATUS=$(echo "$PROFILE_RESPONSE" | tail -n 1)
 assert_status "201" "$PROFILE_STATUS" "profile created for ownership test agent"
 # /api/v1/profiles has no .data wrapper.
 PROFILE_ID=$(echo "$PROFILE_BODY" | jq -r '.id')
 
+# Feature 026 (corrigido, 2026-07-23): creci vai no cadastro do perfil
+# acima, não mais no convite -- o nó `agent` foi removido do convite.
 INVITE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/users/invite" "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
-  -d '{"profile_id":'"${PROFILE_ID}"',"agent":{"creci":"CRECI-SP 222222"}}')
+  -d '{"profile_id":'"${PROFILE_ID}"'}')
 INVITE_BODY=$(echo "$INVITE_RESPONSE" | sed '$d')
 INVITE_STATUS=$(echo "$INVITE_RESPONSE" | tail -n 1)
 assert_status "201" "$INVITE_STATUS" "invite created (agent user_id upsert path)"

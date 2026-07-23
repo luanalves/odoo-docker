@@ -54,42 +54,6 @@ class SchemaValidator:
         },
     }
 
-    # Feature 026 (corrigido): agent invite schema — apenas os campos EXCLUSIVOS
-    # de agente que não existem no perfil já vinculado (profile_id). name/cpf/
-    # email/phone/mobile/hire_date NÃO fazem parte deste nó: todos esses já
-    # vêm do thedevkitchen.estate.profile referenciado por profile_id (o "nó
-    # principal" do convite), que é compartilhado por TODOS os profile_type
-    # convidados via este mesmo endpoint (owner, director, manager, agent,
-    # prospector, receptionist, financial, legal, property_owner, tenant) —
-    # não faz sentido documentá-los/aceitá-los de novo dentro de "agent".
-    # company_id/user_id continuam de fora (sempre derivados no servidor, ver
-    # invite_controller.py).
-    AGENT_INVITE_SCHEMA = {
-        "required": [],
-        "optional": [
-            "creci",
-            "bank_name",
-            "bank_account",
-            "pix_key",
-        ],
-        # Only the types/constraints for the fields this node actually
-        # accepts -- filtered from AGENT_CREATE_SCHEMA (not copied/rewritten)
-        # so the shared "creci" constraint still can't silently diverge
-        # between the two schemas, but name/cpf/email/phone/mobile/hire_date
-        # are no longer validated here at all, since this node doesn't
-        # accept them anymore.
-        "types": {
-            k: v
-            for k, v in AGENT_CREATE_SCHEMA["types"].items()
-            if k in {"creci", "bank_name", "bank_account", "pix_key"}
-        },
-        "constraints": {
-            k: v
-            for k, v in AGENT_CREATE_SCHEMA["constraints"].items()
-            if k in {"creci", "bank_name", "bank_account", "pix_key"}
-        },
-    }
-
     # Agent update schema
     AGENT_UPDATE_SCHEMA = {
         "required": [],
@@ -171,7 +135,23 @@ class SchemaValidator:
             "birthdate",
             "profile_type_id",
         ],
-        "optional": ["phone", "mobile", "occupation", "hire_date"],
+        "optional": [
+            "phone",
+            "mobile",
+            "occupation",
+            "hire_date",
+            # Feature 026 (corrigido, 2026-07-23): campos exclusivos de agente
+            # -- sem equivalente em nenhum outro profile_type -- movidos para
+            # cá a partir do (removido) nó `agent` de POST /api/v1/users/invite.
+            # Só têm efeito quando profile_type_id resolve para code='agent'
+            # (create_profile.py já auto-cria o real.estate.agent nesse caso);
+            # para qualquer outro profile_type são simplesmente ignorados,
+            # como qualquer campo extra não reconhecido pelo schema.
+            "creci",
+            "bank_name",
+            "bank_account",
+            "pix_key",
+        ],
         "types": {
             "name": str,
             "company_id": int,
@@ -183,6 +163,10 @@ class SchemaValidator:
             "mobile": str,
             "occupation": str,
             "hire_date": str,
+            "creci": str,
+            "bank_name": str,
+            "bank_account": str,
+            "pix_key": str,
         },
         "constraints": {
             "name": lambda v: len(v.strip()) > 0,
@@ -195,6 +179,9 @@ class SchemaValidator:
             "email": lambda v: "@" in v and "." in v.split("@")[-1] if v else False,
             "birthdate": lambda v: len(v.strip()) > 0,
             "profile_type_id": lambda v: isinstance(v, int) and v > 0,
+            # Reaproveitado por referência (não copiado) do AGENT_CREATE_SCHEMA
+            # já existente -- evita que as duas regras divirjam silenciosamente.
+            "creci": AGENT_CREATE_SCHEMA["constraints"]["creci"],
         },
     }
 
@@ -421,13 +408,6 @@ class SchemaValidator:
         """Validate agent creation request."""
         return SchemaValidator.validate_request(
             data, SchemaValidator.AGENT_CREATE_SCHEMA
-        )
-
-    @staticmethod
-    def validate_agent_invite(data):
-        """Validate the optional 'agent' object inside POST /api/v1/users/invite. Feature 026."""
-        return SchemaValidator.validate_request(
-            data, SchemaValidator.AGENT_INVITE_SCHEMA
         )
 
     @staticmethod

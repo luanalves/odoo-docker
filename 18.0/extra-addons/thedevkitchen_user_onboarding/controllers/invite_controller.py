@@ -10,7 +10,6 @@ from odoo.addons.thedevkitchen_apigateway.middleware import (
     require_session,
     require_company,
 )
-from odoo.addons.quicksol_estate.controllers.utils.schema import SchemaValidator
 from odoo.addons.quicksol_estate.services.role_resolver import resolve_role
 from odoo.addons.thedevkitchen_observability.services.tracer import trace_http_request
 from ..services.invite_service import InviteService
@@ -32,14 +31,9 @@ class InviteController(http.Controller):
     @require_session
     @require_company
     @trace_http_request
-    def invite_user(self, **kwargs):  # noqa: C901 - already over budget (15)
-        # before Feature 026; the agent-upsert branching this feature adds is
-        # necessary (FR2.1/FR2.2) and already factored into _upsert_agent_for_invite
-        # to minimize the increase. A full reduction below 10 would require
-        # restructuring pre-existing, unrelated sections of this method -- out
-        # of this feature's scope. Other controllers in this codebase carry the
-        # same exemption via .flake8's per-file-ignores (agent_api.py,
-        # profile_api.py, etc.); this file predates that list.
+    def invite_user(self, **kwargs):  # noqa: C901
+        # Pre-existing complexity debt, predates this file joining .flake8's
+        # per-file C901 exemptions.
         try:
             # Parse request body
             try:
@@ -93,15 +87,6 @@ class InviteController(http.Controller):
             profile_type = profile_record.profile_type_id.code
             email = profile_record.email
 
-            # Feature 026: read optional 'agent' object, validate BEFORE any res.users is created
-            agent_payload = data.get("agent")
-            if profile_type == "agent" and agent_payload:
-                is_valid, errors = SchemaValidator.validate_agent_invite(agent_payload)
-                if not is_valid:
-                    return self._error_response(
-                        400, "validation_error", ", ".join(errors)
-                    )
-
             # Get authenticated user
             current_user = request.env.user
 
@@ -129,13 +114,17 @@ class InviteController(http.Controller):
                     )
                 return self._error_response(400, "validation_error", str(e))
 
-            # Feature 026: link (or, defensively, create) real.estate.agent atomically,
-            # linked to BOTH profile and login (FR2.1, FR2.1b).
+            # Feature 026 (corrigido, 2026-07-23): link real.estate.agent to
+            # the new login. Agent-exclusive fields (creci/bank/pix) are no
+            # longer accepted here at all -- they're set at profile-creation
+            # time (POST /api/v1/profiles) instead, since they don't depend
+            # on the login existing. This step ONLY sets user_id on the
+            # record profile_api.py already auto-created (FR2.1b).
             agent_id = None
             if profile_type == "agent":
                 try:
-                    agent_record = self._upsert_agent_for_invite(
-                        profile_record, user, agent_payload
+                    agent_record = self._link_agent_to_invited_user(
+                        profile_record, user
                     )
                 except ValidationError as e:
                     # FR2.2: res.users (and the profile's partner_id link) were already
@@ -146,19 +135,16 @@ class InviteController(http.Controller):
                     request.env.cr.rollback()
                     return self._error_response(409, "conflict", str(e))
                 except psycopg2.IntegrityError as e:
-                    # Review finding (final whole-branch review, Item 4): an explicit
-                    # agent.cpf override that collides with a DIFFERENT agent in the
-                    # same company fires the DB-level UNIQUE(cpf, company_id) constraint
-                    # (real_estate_agent_cpf_company_unique) as a raw psycopg2
-                    # IntegrityError/UniqueViolation, NOT odoo.exceptions.ValidationError
-                    # -- agent.py's _check_cpf_format only validates CPF *format*
-                    # (checksum), it never checks company-scoped uniqueness itself, so
-                    # this DB constraint is the only thing that catches the collision.
-                    # Without this except clause it fell through to the outer generic
-                    # `except Exception` below and surfaced as a 500, even though no
-                    # partial state is actually left (Odoo aborts the whole transaction
-                    # on a raised DB exception, so the rollback below is defense in
-                    # depth, not what actually prevents the partial commit).
+                    # Defense in depth: the defensive create() branch (no bare
+                    # agent found for this profile_id -- legacy/unusual state,
+                    # since profile_api.py normally auto-creates one) pulls cpf
+                    # from profile.document via the model's setdefault(), which
+                    # could in principle collide with a DIFFERENT agent's cpf
+                    # in the same company (real_estate_agent_cpf_company_unique).
+                    # That's a raw psycopg2 IntegrityError/UniqueViolation, not
+                    # odoo.exceptions.ValidationError -- without this except
+                    # clause it would fall through to the generic `except
+                    # Exception` below and surface as a 500.
                     request.env.cr.rollback()
                     error_msg = str(e)
                     if "real_estate_agent_cpf_company_unique" in error_msg:
@@ -242,48 +228,31 @@ class InviteController(http.Controller):
 
     # Helper methods
 
-    def _upsert_agent_for_invite(self, profile_record, user, agent_payload):
-        """Feature 026: link the real.estate.agent that profile_api.py already
-        auto-created for this profile (Feature 010) to the new login, or create
-        one defensively if none exists. Upsert semantics -- profile_api.py's
-        auto-create means a blind create() here would collide on
-        UNIQUE(cpf, company_id); searching by profile_id first avoids that.
-        Raises ValidationError on CRECI/user_id conflicts -- the caller is
-        responsible for rolling back the transaction (FR2.2) before returning.
+    def _link_agent_to_invited_user(self, profile_record, user):
+        """Feature 026 (corrigido, 2026-07-23): link the real.estate.agent that
+        profile_api.py already auto-created for this profile (Feature 010,
+        now including any creci/bank/pix fields supplied at profile-creation
+        time) to the new login, by setting user_id -- the field every RBAC/
+        notification consumer (property_api.py, lead_api.py, serializers.py,
+        proposal.py, record_rules.xml) actually reads (FR2.1b). Creates one
+        defensively if none exists (legacy/unusual state -- profile_api.py
+        normally auto-creates it). Raises ValidationError on a user_id
+        conflict (_check_user_unique) -- the caller is responsible for
+        rolling back the transaction (FR2.2) before returning.
 
-        Only agent-exclusive fields are accepted from `agent_payload` --
-        name/cpf/email/phone/mobile/hire_date are NOT read here (corrected):
-        all six already live on the invited profile (profile_record), which
-        is the same generic identity source every profile_type invited
-        through this endpoint shares. Re-accepting them here would let a
-        caller override the profile's own identity data through a side
-        channel that only exists for the agent branch, and doesn't match how
-        any other profile_type is invited via this endpoint. Only creci and
-        the bank/pix fields have no equivalent anywhere on
-        thedevkitchen.estate.profile -- those are the only fields genuinely
-        exclusive to the agent record.
+        No agent-specific fields (creci/bank/pix) are read or written here
+        anymore -- those are set once, at profile-creation time, and this
+        step never touches them.
         """
-        allowed_agent_keys = {
-            "creci",
-            "bank_name",
-            "bank_account",
-            "pix_key",
-        }
-        explicit_fields = {
-            k: v
-            for k, v in (agent_payload or {}).items()
-            if k in allowed_agent_keys and v is not None
-        }
         Agent = request.env["real.estate.agent"].sudo()
         existing_agent = Agent.search([("profile_id", "=", profile_record.id)], limit=1)
         if existing_agent:
-            existing_agent.write({"user_id": user.id, **explicit_fields})
+            existing_agent.write({"user_id": user.id})
             return existing_agent
         return Agent.create(
             {
                 "profile_id": profile_record.id,
                 "user_id": user.id,
-                **explicit_fields,
             }
         )
 

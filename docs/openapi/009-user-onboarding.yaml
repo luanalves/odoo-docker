@@ -63,8 +63,16 @@ paths:
         - Operational: agent, prospector, receptionist, financial, legal
         - External: tenant, property_owner
         
-        **NO Dual Records**: Profile is the single source of truth. 
+        **NO Dual Records**: Profile is the single source of truth.
         Tenant/property_owner are profile types, not separate entities.
+
+        **Feature 026 (agent profile_type only, corrected 2026-07-23)**: when the
+        invited profile's type is `agent`, this endpoint links `user_id` onto the
+        `real.estate.agent` record that `POST /api/v1/profiles` already created at
+        registration time (CRECI/bank/pix fields, if any, were supplied there, not
+        here — this request body never carries agent-specific fields). The response
+        includes `agent_id` and a `links.agent` entry in that case. For every other
+        profile_type, the response is unchanged.
       operationId: inviteUser
       security:
         - bearerAuth: []
@@ -529,6 +537,15 @@ components:
             invite_expires_at:
               type: string
               format: date-time
+            agent_id:
+              type: integer
+              description: |
+                **Feature 026** (corrected 2026-07-23): only present when the invited
+                profile's type is `agent` — id of the `real.estate.agent` record that
+                `POST /api/v1/profiles` already created (with CRECI/bank/pix, if
+                provided there) and this endpoint just linked `user_id` onto. Absent
+                for every other profile_type.
+              example: 456
         message:
           type: string
         links:
@@ -547,6 +564,10 @@ components:
             profile:
               type: string
               example: "/api/v1/profiles/123"
+            agent:
+              type: string
+              description: Only present when the invited profile's type is `agent` (Feature 026).
+              example: "/api/v1/agents/456"
 
     SetPasswordRequest:
       type: object
@@ -715,9 +736,11 @@ components:
           signup_pending: true
           invite_sent_at: "2026-02-16T10:00:00Z"
           invite_expires_at: "2026-02-17T10:00:00Z"
+          agent_id: 456
         message: "User invited successfully. Email sent to joao@empresa.com"
         links:
           self: "/api/v1/users/42"
           resend_invite: "/api/v1/users/resend-invite"
           collection: "/api/v1/users"
           profile: "/api/v1/profiles/123"
+          agent: "/api/v1/agents/456"

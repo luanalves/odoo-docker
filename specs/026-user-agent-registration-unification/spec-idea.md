@@ -75,6 +75,19 @@ Durante a implementação (Task 4 do plano), descobriu-se — e confirmou-se ao 
 
 ---
 
+## Correção de Design: Validação de Campos de Agente Passa a Ser Condicional a `profile_type` (2026-07-23, segunda correção)
+
+**Bug encontrado durante revisão do solicitante**, na correção acima: ao mover `creci`/`bank_name`/`bank_account`/`pix_key` para `PROFILE_CREATE_SCHEMA` (o schema genérico de `POST /api/v1/profiles`), a validação desses campos passou a rodar **incondicionalmente** para qualquer `profile_type` — `SchemaValidator.validate_request(body, PROFILE_CREATE_SCHEMA)` é chamado ANTES de `profile_type_id` ser resolvido para seu `code`. Consequência: um perfil `tenant` (ou qualquer tipo não-agent) com um `creci` malformado no payload era incorretamente rejeitado com 400, mesmo esse campo sendo irrelevante para esse `profile_type`.
+
+**Correção aplicada:**
+1. `PROFILE_CREATE_SCHEMA` voltou a NÃO conter `creci`/`bank_name`/`bank_account`/`pix_key` (nem em `optional`, `types` ou `constraints`).
+2. Novo schema separado, `PROFILE_AGENT_FIELDS_SCHEMA` (e o método `SchemaValidator.validate_profile_agent_fields(data)`), contendo apenas esses 4 campos — reaproveitando as mesmas regras de `AGENT_CREATE_SCHEMA` por referência (não cópia), evitando divergência silenciosa entre as duas.
+3. `profile_api.py::create_profile` agora só invoca `validate_profile_agent_fields` **depois** de confirmar `profile_type.code == "agent"` (e antes de qualquer escrita no banco, preservando fail-fast) — para qualquer outro `profile_type`, esses campos são simplesmente ignorados, mesmo se presentes e malformados no payload.
+
+**Verificado ao vivo (2026-07-23)**: perfil `tenant` com `creci: "ab"` → 201 (aceito, campo ignorado, nenhum `real_estate_agent` criado); perfil `agent` com `creci: "ab"` → 400 (constraint de tamanho ainda aplicada); perfil `agent` com CRECI válido → 201 com `agent_id` criado normalmente. Coberto por `tests/unit/test_profile_create_agent_fields_unit.py` (reescrito para testar o novo schema) e por um novo cenário em `integration_tests/test_us026_s1_invite_other_profile_types.sh`.
+
+---
+
 ## Resumo Executivo
 
 **(Nota: este resumo descreve a versão JÁ CORRIGIDA do fluxo — ver "Correção de Design" acima para o que mudou e por quê.)**

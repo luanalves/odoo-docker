@@ -190,6 +190,21 @@ class ProfileApiController(http.Controller):
                     f"Your role cannot create profile_type_id: {profile_type_id} ({profile_type.name})",
                 )
 
+            # Feature 026 (corrigido, 2026-07-23, segunda correção): validar
+            # creci/bank_name/bank_account/pix_key SÓ quando o profile_type
+            # realmente for 'agent' -- validar isso incondicionalmente (via
+            # PROFILE_CREATE_SCHEMA) rejeitaria, por exemplo, um perfil
+            # 'tenant' só porque um creci mal formatado foi enviado, mesmo
+            # esse campo sendo irrelevante para esse profile_type.
+            if profile_type.code == "agent":
+                is_valid, agent_field_errors = (
+                    SchemaValidator.validate_profile_agent_fields(body)
+                )
+                if not is_valid:
+                    return error_response(
+                        400, f"Validation error: {agent_field_errors}"
+                    )
+
             # Normalize document (D11)
             document_raw = body["document"]
             document_normalized = validators.normalize_document(document_raw)

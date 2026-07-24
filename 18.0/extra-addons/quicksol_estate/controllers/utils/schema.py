@@ -140,17 +140,6 @@ class SchemaValidator:
             "mobile",
             "occupation",
             "hire_date",
-            # Feature 026 (corrigido, 2026-07-23): campos exclusivos de agente
-            # -- sem equivalente em nenhum outro profile_type -- movidos para
-            # cá a partir do (removido) nó `agent` de POST /api/v1/users/invite.
-            # Só têm efeito quando profile_type_id resolve para code='agent'
-            # (create_profile.py já auto-cria o real.estate.agent nesse caso);
-            # para qualquer outro profile_type são simplesmente ignorados,
-            # como qualquer campo extra não reconhecido pelo schema.
-            "creci",
-            "bank_name",
-            "bank_account",
-            "pix_key",
         ],
         "types": {
             "name": str,
@@ -163,10 +152,6 @@ class SchemaValidator:
             "mobile": str,
             "occupation": str,
             "hire_date": str,
-            "creci": str,
-            "bank_name": str,
-            "bank_account": str,
-            "pix_key": str,
         },
         "constraints": {
             "name": lambda v: len(v.strip()) > 0,
@@ -179,9 +164,32 @@ class SchemaValidator:
             "email": lambda v: "@" in v and "." in v.split("@")[-1] if v else False,
             "birthdate": lambda v: len(v.strip()) > 0,
             "profile_type_id": lambda v: isinstance(v, int) and v > 0,
-            # Reaproveitado por referência (não copiado) do AGENT_CREATE_SCHEMA
-            # já existente -- evita que as duas regras divirjam silenciosamente.
-            "creci": AGENT_CREATE_SCHEMA["constraints"]["creci"],
+        },
+    }
+
+    # Feature 026 (corrigido, 2026-07-23, segunda correção): campos exclusivos
+    # de agente aceitos por POST /api/v1/profiles -- sem equivalente em
+    # nenhum outro profile_type. Deliberadamente NÃO fazem parte de
+    # PROFILE_CREATE_SCHEMA: esse schema genérico valida ANTES de
+    # profile_type_id ser resolvido para seu code, então uma constraint de
+    # creci ali dispararia mesmo para um profile_type que não é 'agent' (ex:
+    # um creci mal formatado rejeitaria a criação de um perfil 'tenant', que
+    # nunca vai usar esse campo). Este schema separado só é validado pelo
+    # controller (profile_api.py::create_profile) DEPOIS de confirmar
+    # profile_type.code == 'agent' -- para qualquer outro tipo, esses campos
+    # são simplesmente ignorados, sem nenhuma validação ser tentada.
+    PROFILE_AGENT_FIELDS_SCHEMA = {
+        "required": [],
+        "optional": ["creci", "bank_name", "bank_account", "pix_key"],
+        "types": {
+            k: v
+            for k, v in AGENT_CREATE_SCHEMA["types"].items()
+            if k in {"creci", "bank_name", "bank_account", "pix_key"}
+        },
+        "constraints": {
+            k: v
+            for k, v in AGENT_CREATE_SCHEMA["constraints"].items()
+            if k in {"creci", "bank_name", "bank_account", "pix_key"}
         },
     }
 
@@ -415,6 +423,17 @@ class SchemaValidator:
         """Validate agent update request."""
         return SchemaValidator.validate_request(
             data, SchemaValidator.AGENT_UPDATE_SCHEMA
+        )
+
+    @staticmethod
+    def validate_profile_agent_fields(data):
+        """Validate the agent-exclusive fields on POST /api/v1/profiles
+        (creci/bank_name/bank_account/pix_key). Feature 026 (corrigido,
+        2026-07-23): the caller MUST only invoke this after confirming the
+        target profile_type resolves to 'agent' -- these fields are
+        meaningless (and unvalidated) for every other profile_type."""
+        return SchemaValidator.validate_request(
+            data, SchemaValidator.PROFILE_AGENT_FIELDS_SCHEMA
         )
 
     @staticmethod

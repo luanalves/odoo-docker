@@ -148,6 +148,42 @@ for profile_code in owner director manager prospector receptionist financial leg
   fi
 done
 
+# --- Feature 026 (corrigido, 2026-07-23, segunda correção) regression: ---
+# creci/bank_* validation must ONLY fire when profile_type resolves to
+# 'agent'. Before this fix, PROFILE_CREATE_SCHEMA validated these fields
+# unconditionally, so a malformed creci sent alongside a non-agent
+# profile_type_id would incorrectly reject profile creation with 400, even
+# though creci is meaningless for that profile_type. Prove the malformed
+# creci is now silently accepted-and-ignored for a 'tenant' profile: 201,
+# no real_estate_agent row created, and the value isn't persisted anywhere.
+TENANT_TYPE_ID=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+  "SELECT id FROM thedevkitchen_profile_type WHERE code = 'tenant' LIMIT 1;" | tr -d '[:space:]')
+BAD_CRECI_EMAIL="us026_otherprofiles_badcreci_${TIMESTAMP}@example.com"
+
+BAD_CRECI_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/profiles" \
+  "${AUTH_HEADERS[@]}" -H "Content-Type: application/json" \
+  -d '{"name":"US026 Tenant Bad Creci","company_id":'"${COMPANY_ID}"',"document":"35299744471","email":"'"${BAD_CRECI_EMAIL}"'","birthdate":"1990-01-01","profile_type_id":'"${TENANT_TYPE_ID}"',"creci":"ab"}')
+BAD_CRECI_BODY=$(echo "$BAD_CRECI_RESPONSE" | sed '$d')
+BAD_CRECI_STATUS=$(echo "$BAD_CRECI_RESPONSE" | tail -n 1)
+assert_status "201" "$BAD_CRECI_STATUS" "tenant profile with malformed creci is accepted (agent-field validation is not gated by profile_type)"
+
+BAD_CRECI_PROFILE_ID=$(echo "$BAD_CRECI_BODY" | jq -r '.id')
+TESTS_RUN=$((TESTS_RUN + 1))
+if [ -n "$BAD_CRECI_PROFILE_ID" ] && [ "$BAD_CRECI_PROFILE_ID" != "null" ]; then
+  AGENT_COUNT_BAD_CRECI=$(docker compose -f "${SCRIPT_DIR}/../18.0/docker-compose.yml" exec -T db psql -U odoo -d realestate -tAc \
+    "SELECT COUNT(*) FROM real_estate_agent WHERE profile_id = ${BAD_CRECI_PROFILE_ID};" | tr -d '[:space:]')
+  if [ "$AGENT_COUNT_BAD_CRECI" = "0" ]; then
+    echo "PASS: no real_estate_agent record created for tenant profile despite malformed creci in payload"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+  else
+    echo "FAIL: unexpected real_estate_agent row(s) ($AGENT_COUNT_BAD_CRECI) for tenant profile with malformed creci"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+  fi
+else
+  echo "FAIL: tenant-with-bad-creci profile creation did not return a usable profile id (body: $BAD_CRECI_BODY)"
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
 cleanup_test_data
 
 echo ""

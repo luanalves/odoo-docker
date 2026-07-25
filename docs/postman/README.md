@@ -4,13 +4,19 @@
 
 Complete Postman collection for Quicksol Real Estate Management System API.
 
-**Version:** 1.41.0
-**Last Updated:** 2026-07-23
+**Version:** 1.42.0
+**Last Updated:** 2026-07-25
 **Spec Coverage:** Complete API (55+ endpoints)
 
 ## Available Collections
 
-### 1. Complete API Collection (v1.41) ⭐ RECOMMENDED
+### 1. Complete API Collection (v1.42) ⭐ RECOMMENDED
+**File:** `quicksol_api_v1.42_postman_collection.json`
+**Coverage:** All 55+ endpoints - Complete API coverage
+**ADR Compliance:** ADR-016 (complete)
+**Note:** `User Login`'s test script now also saves `company_id` to the environment (from `user.default_company_id`, falling back to `user.companies[0].id`) — it was referenced across the collection (e.g. `Create Profile`'s body) but never actually set, so every user had to fill it in by hand after logging in.
+
+### 1. Complete API Collection (v1.41)
 **File:** `quicksol_api_v1.41_postman_collection.json`
 **Coverage:** All 55+ endpoints - Complete API coverage
 **ADR Compliance:** ADR-016 (complete)

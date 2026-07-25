@@ -35,9 +35,9 @@ Step 2 — `POST /api/v1/users/invite` (this endpoint):
 → that's the entire body. When the profile's type is 'agent', this step links `user_id` (the new login's id) onto the real.estate.agent record created in step 1 -- it does not create, read, or modify creci/bank/pix data at all; those were already set in step 1.
 
 **Authorization Matrix:**
-- Owner → all 9 profiles
-- Manager → 5 operational profiles (agent, prospector, receptionist, financial, inspector)
-- Agent → owner + portal only
+- Owner → all 10 profile types
+- Director / Manager → 5 operational profiles (agent, prospector, receptionist, financial, legal)
+- Agent → property_owner + tenant only
 
 **Required Headers:**
 - `Authorization: Bearer {jwt_token}`
@@ -94,7 +94,7 @@ Feature 026 (corrected 2026-07-23): when the target profile's type is 'agent', t
       "required": ["self", "resend_invite", "collection", "profile"],
       "properties": {
         "self":          {"type": "string", "example": "/api/v1/users/42"},
-        "resend_invite": {"type": "string", "example": "/api/v1/users/42/resend-invite"},
+        "resend_invite": {"type": "string", "example": "/api/v1/users/resend-invite"},
         "collection":    {"type": "string", "example": "/api/v1/users"},
         "profile":       {"type": "string", "example": "/api/v1/profiles/17"},
         "agent":         {"type": "string", "example": "/api/v1/agents/8", "description": "Feature 026: only present when the target profile's type is 'agent'"}

@@ -204,7 +204,7 @@ class InviteController(http.Controller):
             # Build HATEOAS links (as dict for easier access in tests)
             links = {
                 "self": f"/api/v1/users/{user.id}",
-                "resend_invite": f"/api/v1/users/{user.id}/resend-invite",
+                "resend_invite": "/api/v1/users/resend-invite",
                 "collection": "/api/v1/users",
                 "profile": f"/api/v1/profiles/{profile_id}",
             }
@@ -332,7 +332,7 @@ class InviteController(http.Controller):
             # - @require_session sets request.env user
             # - @require_company enforces company access
             requester = request.env.user
-            company_id = request.httprequest.headers.get("X-Company-ID")
+            company_id = request.httprequest.headers.get("X-Company-Id")
 
             if not requester or not requester.id or not company_id:
                 return self._error_response(
@@ -343,7 +343,7 @@ class InviteController(http.Controller):
                 company_id = int(company_id)
             except (TypeError, ValueError):
                 return self._error_response(
-                    400, "validation_error", "Invalid X-Company-ID header"
+                    400, "validation_error", "Invalid X-Company-Id header"
                 )
 
             # Get user record

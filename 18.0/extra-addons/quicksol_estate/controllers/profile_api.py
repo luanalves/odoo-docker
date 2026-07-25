@@ -190,6 +190,21 @@ class ProfileApiController(http.Controller):
                     f"Your role cannot create profile_type_id: {profile_type_id} ({profile_type.name})",
                 )
 
+            # Feature 026 (corrigido, 2026-07-23, segunda correção): validar
+            # creci/bank_name/bank_account/pix_key SÓ quando o profile_type
+            # realmente for 'agent' -- validar isso incondicionalmente (via
+            # PROFILE_CREATE_SCHEMA) rejeitaria, por exemplo, um perfil
+            # 'tenant' só porque um creci mal formatado foi enviado, mesmo
+            # esse campo sendo irrelevante para esse profile_type.
+            if profile_type.code == "agent":
+                is_valid, agent_field_errors = (
+                    SchemaValidator.validate_profile_agent_fields(body)
+                )
+                if not is_valid:
+                    return error_response(
+                        400, f"Validation error: {agent_field_errors}"
+                    )
+
             # Normalize document (D11)
             document_raw = body["document"]
             document_normalized = validators.normalize_document(document_raw)
@@ -251,6 +266,14 @@ class ProfileApiController(http.Controller):
                     "hire_date": profile.hire_date
                     or date.today(),  # Default to today if not provided
                 }
+                # Feature 026 (corrigido, 2026-07-23): campos exclusivos de
+                # agente (sem equivalente em nenhum outro profile_type) agora
+                # são aceitos aqui, no cadastro, em vez de esperar o convite
+                # (POST /api/v1/users/invite) para existirem -- o agente já
+                # nasce completo, não precisa aguardar o login ser criado.
+                for agent_field in ("creci", "bank_name", "bank_account", "pix_key"):
+                    if body.get(agent_field) is not None:
+                        agent_vals[agent_field] = body[agent_field]
                 agent = Agent.sudo().create(agent_vals)
                 _logger.info(f"Auto-created agent {agent.id} for profile {profile.id}")
 
@@ -261,6 +284,23 @@ class ProfileApiController(http.Controller):
 
         except ValidationError as e:
             _logger.warning(f"Validation error creating profile: {str(e)}")
+            # Feature 026: a duplicate agent.creci (_check_creci_format,
+            # models/agent.py) can now raise here too, AFTER profile.sudo()
+            # .create() already succeeded earlier in this same method -- an
+            # uncaught-but-handled exception like this one does NOT roll back
+            # Odoo's cursor on its own; the request would otherwise still
+            # commit the already-created profile row at the end of this HTTP
+            # request despite returning an error, leaving a profile with no
+            # agent record for a type that requires one. Roll back explicitly
+            # before responding, matching the same pattern already used in
+            # invite_controller.py for the equivalent atomicity guarantee.
+            request.env.cr.rollback()
+            # Map the duplicate-creci case to 409 Conflict, matching this
+            # project's convention for "already exists" errors (see the
+            # document-uniqueness check earlier in this same method), instead
+            # of a generic 400.
+            if "já cadastrado" in str(e):
+                return error_response(409, str(e))
             return error_response(400, str(e))
         except json.JSONDecodeError:
             return error_response(400, "Invalid JSON body")
@@ -613,20 +653,25 @@ class ProfileApiController(http.Controller):
                         # Proactive session invalidation (T017: US2)
                         # APISession.write({'is_active': False}) triggers the Redis override
                         try:
-                            APISession = request.env['thedevkitchen.api.session']
-                            active_sessions = APISession.sudo().search([
-                                ('user_id', '=', user_record.id),
-                                ('is_active', '=', True),
-                            ])
+                            APISession = request.env["thedevkitchen.api.session"]
+                            active_sessions = APISession.sudo().search(
+                                [
+                                    ("user_id", "=", user_record.id),
+                                    ("is_active", "=", True),
+                                ]
+                            )
                             if active_sessions:
-                                active_sessions.write({'is_active': False})
+                                active_sessions.write({"is_active": False})
                                 _logger.info(
-                                    '[CACHE] invalidated %d session(s) for user %d',
+                                    "[CACHE] invalidated %d session(s) for user %d",
                                     len(active_sessions),
                                     user_record.id,
                                 )
                         except Exception as exc:
-                            _logger.warning('[CACHE] session invalidation during profile delete failed: %s', exc)
+                            _logger.warning(
+                                "[CACHE] session invalidation during profile delete failed: %s",
+                                exc,
+                            )
 
             return success_response(
                 {

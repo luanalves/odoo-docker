@@ -18,10 +18,26 @@
             <field name="summary">Invite a new user to the platform</field>
             <field name="description">Sends an invitation email to a new user. Creates a pending user account with a secure invite token (UUID v4 → SHA-256).
 
+**This is a generic endpoint that invites ANY profile type** (`owner`, `director`, `manager`, `agent`, `prospector`, `receptionist`, `financial`, `legal`, `property_owner`, `tenant`) — the target profile (created beforehand via `POST /api/v1/profiles`) already carries all identity data (`name`, `document`/CPF, `email`, `phone`, `mobile`) AND, for agent-typed profiles, the CRECI/bank/pix data too. `profile_id` is the ONLY field this request accepts, for every profile type, no exceptions.
+
+**⚠️ This is step 2 of 2 — you need a profile_id first.** Both steps shown together so the full flow is visible in one place:
+
+Step 1 — `POST /api/v1/profiles` (see that endpoint's own docs for the full contract, including the optional `creci`/`bank_name`/`bank_account`/`pix_key` fields for agent-typed profiles):
+```
+{"name": "João Silva", "company_id": 5, "document": "12345678901", "email": "joao.silva@example.com", "phone": "+5511999998888", "birthdate": "1990-01-01", "profile_type_id": 4, "creci": "CRECI-SP 12345", "bank_name": "Banco do Brasil", "bank_account": "12345-6", "pix_key": "jane@example.com"}
+```
+→ response includes `id` (the profile's id) — that becomes `profile_id` below. For agent-typed profiles it also includes `agent_id` (the already-created, already-complete real.estate.agent record, still missing only `user_id`).
+
+Step 2 — `POST /api/v1/users/invite` (this endpoint):
+```
+{"profile_id": 17}
+```
+→ that's the entire body. When the profile's type is 'agent', this step links `user_id` (the new login's id) onto the real.estate.agent record created in step 1 -- it does not create, read, or modify creci/bank/pix data at all; those were already set in step 1.
+
 **Authorization Matrix:**
-- Owner → all 9 profiles
-- Manager → 5 operational profiles (agent, prospector, receptionist, financial, inspector)
-- Agent → owner + portal only
+- Owner → all 10 profile types
+- Director / Manager → 5 operational profiles (agent, prospector, receptionist, financial, legal)
+- Agent → property_owner + tenant only
 
 **Required Headers:**
 - `Authorization: Bearer {jwt_token}`
@@ -29,29 +45,22 @@
 - `X-Company-Id: {company_id}`
 
 **Required Fields:**
-- `name`: Full name of the user (string)
-- `email`: Email address (RFC 5322 validated, string)
-- `profile`: RBAC profile (one of: owner, manager, agent, prospector, receptionist, financial, inspector, maintenance, portal)
-
-**Optional Fields (portal profile only):**
-- `cpf`: Brazilian CPF number (validated, string)
-- `phone`: Phone number (string)
+- `profile_id`: ID of the target thedevkitchen.estate.profile record (integer) — works for any profile_type. This is the only field the request body accepts; any other key is silently ignored, same as sending an unrecognized field to any other endpoint.
 
 **Error Responses:**
-- **400 Bad Request**: Invalid email, missing fields, invalid profile, duplicate email, invalid CPF
+- **400 Bad Request**: Invalid or missing profile_id
 - **403 Forbidden**: Caller not authorized to invite target profile
-- **409 Conflict**: User with this email already exists</field>
+- **404 Not Found**: profile_id does not exist
+- **409 Conflict**: Profile already has a linked user account, OR (agent profile_type, rare defensive-branch case) a data-integrity conflict linking the agent record
+
+Feature 026 (corrected 2026-07-23): when the target profile's type is 'agent', this endpoint links the new login's user_id onto the real.estate.agent record that POST /api/v1/profiles already created (with creci/bank/pix already set, if provided there) -- it does not accept or touch any agent-specific field itself. On success, the response includes agent_id and a 'links.agent' HATEOAS entry.</field>
             <field name="request_schema"><![CDATA[
 {
   "type": "object",
   "title": "InviteUserRequest",
-  "required": ["name", "email", "profile"],
+  "required": ["profile_id"],
   "properties": {
-    "name":    {"type": "string", "example": "João Silva"},
-    "email":   {"type": "string", "format": "email", "example": "joao.silva@example.com"},
-    "profile": {"type": "string", "enum": ["owner", "manager", "agent", "prospector", "receptionist", "financial", "inspector", "maintenance", "portal"], "example": "agent"},
-    "cpf":     {"type": "string", "example": "123.456.789-09"},
-    "phone":   {"type": "string", "example": "+55 11 99999-9999"}
+    "profile_id": {"type": "integer", "example": 17, "description": "ID of an existing thedevkitchen.estate.profile record -- the only field this endpoint accepts, for any profile_type"}
   }
 }
 ]]></field>
@@ -59,16 +68,36 @@
 {
   "type": "object",
   "title": "InviteUserResponse",
+  "required": ["success", "data", "message"],
   "properties": {
     "success": {"type": "boolean", "example": true},
     "data": {
       "type": "object",
+      "required": ["id", "name", "email", "document", "profile", "profile_id", "signup_pending", "invite_sent_at", "invite_expires_at"],
       "properties": {
-        "user_id":       {"type": "integer", "example": 42},
-        "email":         {"type": "string",  "example": "joao.silva@example.com"},
-        "profile":       {"type": "string",  "example": "agent"},
-        "status":        {"type": "string",  "example": "pending"},
-        "invite_sent_at":{"type": "string",  "format": "date-time", "example": "2025-01-15T10:30:00Z"}
+        "id":               {"type": "integer", "example": 42, "description": "res.users ID of the invited user"},
+        "name":             {"type": "string",  "example": "João Silva"},
+        "email":            {"type": "string",  "example": "joao.silva@example.com"},
+        "document":         {"type": "string",  "example": "12345678909", "description": "CPF/CNPJ from the source profile record"},
+        "profile":          {"type": "string",  "example": "agent", "description": "profile_type code of the source thedevkitchen.estate.profile record"},
+        "profile_id":       {"type": "integer", "example": 17},
+        "signup_pending":   {"type": "boolean", "example": true},
+        "invite_sent_at":   {"type": ["string", "null"], "format": "date-time", "example": "2025-01-15T10:30:00Z"},
+        "invite_expires_at":{"type": ["string", "null"], "format": "date-time", "example": "2025-01-22T10:30:00Z"},
+        "email_status":     {"type": "string", "example": "failed", "description": "Only present when the invite email failed to send (value is always 'failed')"},
+        "agent_id":         {"type": "integer", "example": 8, "description": "Feature 026: only present when the target profile's type is 'agent' — ID of the real.estate.agent record linked/created during this invite"}
+      }
+    },
+    "message": {"type": "string", "example": "User invited successfully. Email sent to joao.silva@example.com"},
+    "links": {
+      "type": "object",
+      "required": ["self", "resend_invite", "collection", "profile"],
+      "properties": {
+        "self":          {"type": "string", "example": "/api/v1/users/42"},
+        "resend_invite": {"type": "string", "example": "/api/v1/users/resend-invite"},
+        "collection":    {"type": "string", "example": "/api/v1/users"},
+        "profile":       {"type": "string", "example": "/api/v1/profiles/17"},
+        "agent":         {"type": "string", "example": "/api/v1/agents/8", "description": "Feature 026: only present when the target profile's type is 'agent'"}
       }
     }
   }

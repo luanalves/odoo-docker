@@ -207,15 +207,6 @@ ADR-003 (current, v3.0) requires 100% coverage of validations (`required=True`, 
 - Feature flags: none found at a module/tenant level; `thedevkitchen.security.settings` model exists for security-related runtime settings (session cache TTL, etc., per `.specify/memory/constitution.md` v1.9.1).
 - Per-environment performance tuning (`workers`, `max_cron_threads`, `limit_*`) is env-var driven (`ODOO_WORKERS`, etc.) — **Not identified/verifiable from this repo alone**, since production `.env` values are not committed (as expected for secrets) and `odoo.conf` itself leaves these directives commented out.
 
-## Development Workflow — Verification Before Completion
-
-This project uses Superpowers skills for feature work (`superpowers:brainstorming` → `superpowers:writing-plans` → `superpowers:executing-plans`/`superpowers:subagent-driven-development`). Any plan or task list these skills produce for this project **must include an explicit verification step, using this project's own test suite, before a task is marked complete** — this is what makes `superpowers:verification-before-completion` and `superpowers:requesting-code-review` evidence-based instead of a generic "I ran the tests" claim:
-
-- **Unit/integration (Python, Odoo)**: `bash scripts/validate_coverage.sh` — runs each module's unit tests (or `unittest discover`/native `odoo --test-enable`, routed automatically per module) plus the curl-based E2E suite. Safe to run in full.
-- **E2E API (curl, `integration_tests/test_<feature>*.sh`)**: run only the script(s) for the feature just touched, e.g. `bash integration_tests/test_us17_s1_upload_journey.sh`. **Do not run all `integration_tests/test_*.sh` back-to-back in one sitting** — Odoo's own login-cooldown protection (`_assert_can_auth`) is global per source IP, not per user, and enough incidental auth failures across unrelated scripts in a tight loop will lock out login for every subsequent script, producing a wall of false negatives that look like real bugs. If you do need the full suite, restart the `odoo` service (`docker compose restart odoo` + wait for `/web/login` to return 200) before each script.
-
-> Details and known test-suite caveats: [testing.md](knowledge_base/testing.md)
-
 ## 12. Attention Points — Documentation/Code Discrepancies (reconciled)
 
 1. **Celery queue names/concurrency mismatch (RESOLVED — code is source of truth).** `docs/guide/02-docker-components.md` describes queues `commission_queue` / `notification_queue` / `audit_queue` at concurrency 2/4/2. The actual, verified configuration in `18.0/docker-compose.yml` and `event_bus.py`/`tasks.py`/`proposal.py` is `commission_events` (concurrency 2) / `audit_events` (concurrency 1) / `notification_events` (concurrency 1). Treat the code/compose values as authoritative; `docs/guide/02-docker-components.md` should be corrected to match. Details: [crons-queues.md](knowledge_base/crons-queues.md), [architecture.md](knowledge_base/architecture.md).

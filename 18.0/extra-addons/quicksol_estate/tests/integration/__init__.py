@@ -32,3 +32,6 @@ from . import test_proposal_expiration
 
 # 2026-07 ADR-003 validation-coverage audit gap fixes
 from . import test_validation_gaps
+
+# Feature 026: characterization test for agent.create() profile/user setdefault mechanism
+from . import test_agent_create_from_profile_and_user

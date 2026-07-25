@@ -15,7 +15,6 @@ The constitution is a **high-level navigation document** — concise, always up-
 - Read the existing `knowledge_base/` (also at the workspace root) to consolidate and reference detailed information
 - Reconcile any existing external documentation (README, `docs/`, ADRs, wiki, Confluence/Notion) with what is found in the code, flagging discrepancies
 - **DO NOT duplicate** details already documented in the knowledge base — just summarize and reference
-- If the workspace uses Superpowers skills (check for `.claude/skills` entries or prior `CLAUDE.md` content referencing `superpowers:brainstorming`/`superpowers:writing-plans`/`superpowers:executing-plans`) **and** has an automated test suite (Step 3h finds one), populate the **Development Workflow** section of the constitution (see output template) so that plans generated via `superpowers:brainstorming`/`superpowers:writing-plans` always come with a concrete, project-specific verification step already attached — satisfying `superpowers:verification-before-completion` with real commands instead of a generic reminder. If no test suite or no Superpowers usage is detected, omit the section rather than inventing commands.
 
 ## Constraints
 - DO NOT implement application code — only read, analyze, and document.
@@ -401,17 +400,6 @@ Main by category:
 - [ ] [item requiring attention]
 - [ ] Incomplete knowledge base: run **thedevkitchen-speckit-project-knowledge-base** for [pending area]
 - [ ] Data unavailable without database/service access: [list]
-
-## 13. Development Workflow — Verification Before Completion (only if Superpowers is used)
-
-> Include this section only when the workspace uses Superpowers skills AND has a detected automated test suite (Step 3h). Omit entirely otherwise — do not invent commands.
-
-This project uses Superpowers skills for feature work (`superpowers:brainstorming` → `superpowers:writing-plans` → `superpowers:executing-plans`/`superpowers:subagent-driven-development`). Any plan or task list these skills produce for this project **must include an explicit verification step, using this project's own test suite, before a task is marked complete** — this is what makes `superpowers:verification-before-completion` and `superpowers:requesting-code-review` evidence-based instead of a generic "I ran the tests" claim:
-
-- Unit/integration tests: `[project-specific command from Step 3h, e.g. "bash scripts/validate_coverage.sh" or "npm test"]`
-- E2E/functional tests: `[project-specific command(s), e.g. relevant integration_tests/test_<feature>*.sh — run individually per touched feature, not the whole suite at once, if doing so is known to cause false negatives]`
-
-> If per-command caveats exist (rate limits, ordering dependencies, environment resets needed), note them briefly here and point to [testing.md](knowledge_base/testing.md) for detail.
 ```
 
 ---
@@ -436,4 +424,3 @@ This project uses Superpowers skills for feature work (`superpowers:brainstormin
    - Any data that requires database or runtime environment access
    - Security warnings found (credentials file tracked in git, APM not configured, etc.)
    - Any discrepancies found between existing documentation and code
-   - Whether the **Development Workflow** section (§13) was included or omitted, and why (Superpowers not detected, no test suite detected, or both present and populated)

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
+import psycopg2
 from odoo import http
 from odoo.http import request, Response
 from odoo.exceptions import UserError, ValidationError
@@ -30,7 +31,9 @@ class InviteController(http.Controller):
     @require_session
     @require_company
     @trace_http_request
-    def invite_user(self, **kwargs):
+    def invite_user(self, **kwargs):  # noqa: C901
+        # Pre-existing complexity debt, predates this file joining .flake8's
+        # per-file C901 exemptions.
         try:
             # Parse request body
             try:
@@ -53,7 +56,9 @@ class InviteController(http.Controller):
 
             # Load profile record (optimized: search instead of browse+exists)
             ProfileModel = request.env["thedevkitchen.estate.profile"]
-            profile_record = ProfileModel.sudo().search([("id", "=", int(profile_id))], limit=1)
+            profile_record = ProfileModel.sudo().search(
+                [("id", "=", int(profile_id))], limit=1
+            )
 
             if not profile_record:
                 return self._error_response(
@@ -65,7 +70,9 @@ class InviteController(http.Controller):
                 existing_user = (
                     request.env["res.users"]
                     .sudo()
-                    .search([("partner_id", "=", profile_record.partner_id.id)], limit=1)
+                    .search(
+                        [("partner_id", "=", profile_record.partner_id.id)], limit=1
+                    )
                 )
                 if existing_user:
                     return self._error_response(
@@ -97,8 +104,7 @@ class InviteController(http.Controller):
             # Feature 010: Create user from profile (unified flow - no dual records)
             try:
                 user = invite_service.create_user_from_profile(
-                    profile_record=profile_record,
-                    created_by=current_user
+                    profile_record=profile_record, created_by=current_user
                 )
             except ValidationError as e:
                 if "already exists" in str(e):
@@ -107,6 +113,48 @@ class InviteController(http.Controller):
                         409, "conflict", str(e), {"field": field}
                     )
                 return self._error_response(400, "validation_error", str(e))
+
+            # Feature 026 (corrigido, 2026-07-23): link real.estate.agent to
+            # the new login. Agent-exclusive fields (creci/bank/pix) are no
+            # longer accepted here at all -- they're set at profile-creation
+            # time (POST /api/v1/profiles) instead, since they don't depend
+            # on the login existing. This step ONLY sets user_id on the
+            # record profile_api.py already auto-created (FR2.1b).
+            agent_id = None
+            if profile_type == "agent":
+                try:
+                    agent_record = self._link_agent_to_invited_user(
+                        profile_record, user
+                    )
+                except ValidationError as e:
+                    # FR2.2: res.users (and the profile's partner_id link) were already
+                    # created/written earlier in this same request's cursor and are not yet
+                    # committed. Returning a response here without rolling back would leave
+                    # them durably committed despite the client seeing a 409 -- roll back the
+                    # whole transaction so a failed agent link never leaves a partial state.
+                    request.env.cr.rollback()
+                    return self._error_response(409, "conflict", str(e))
+                except psycopg2.IntegrityError as e:
+                    # Defense in depth: the defensive create() branch (no bare
+                    # agent found for this profile_id -- legacy/unusual state,
+                    # since profile_api.py normally auto-creates one) pulls cpf
+                    # from profile.document via the model's setdefault(), which
+                    # could in principle collide with a DIFFERENT agent's cpf
+                    # in the same company (real_estate_agent_cpf_company_unique).
+                    # That's a raw psycopg2 IntegrityError/UniqueViolation, not
+                    # odoo.exceptions.ValidationError -- without this except
+                    # clause it would fall through to the generic `except
+                    # Exception` below and surface as a 500.
+                    request.env.cr.rollback()
+                    error_msg = str(e)
+                    if "real_estate_agent_cpf_company_unique" in error_msg:
+                        message = (
+                            "An agent with this CPF already exists in this company"
+                        )
+                    else:
+                        message = "Data integrity error while linking agent"
+                    return self._error_response(409, "conflict", message)
+                agent_id = agent_record.id
 
             # Generate invite token
             raw_token, token_record = token_service.generate_token(
@@ -149,13 +197,21 @@ class InviteController(http.Controller):
             if not email_sent:
                 response_data["email_status"] = "failed"
 
+            # Feature 026: include agent_id when a real.estate.agent was linked/created
+            if agent_id:
+                response_data["agent_id"] = agent_id
+
             # Build HATEOAS links (as dict for easier access in tests)
             links = {
                 "self": f"/api/v1/users/{user.id}",
-                "resend_invite": f"/api/v1/users/{user.id}/resend-invite",
+                "resend_invite": "/api/v1/users/resend-invite",
                 "collection": "/api/v1/users",
                 "profile": f"/api/v1/profiles/{profile_id}",
             }
+
+            # Feature 026: HATEOAS link to the linked/created agent record
+            if agent_id:
+                links["agent"] = f"/api/v1/agents/{agent_id}"
 
             return self._success_response(
                 201,
@@ -171,6 +227,34 @@ class InviteController(http.Controller):
             )
 
     # Helper methods
+
+    def _link_agent_to_invited_user(self, profile_record, user):
+        """Feature 026 (corrigido, 2026-07-23): link the real.estate.agent that
+        profile_api.py already auto-created for this profile (Feature 010,
+        now including any creci/bank/pix fields supplied at profile-creation
+        time) to the new login, by setting user_id -- the field every RBAC/
+        notification consumer (property_api.py, lead_api.py, serializers.py,
+        proposal.py, record_rules.xml) actually reads (FR2.1b). Creates one
+        defensively if none exists (legacy/unusual state -- profile_api.py
+        normally auto-creates it). Raises ValidationError on a user_id
+        conflict (_check_user_unique) -- the caller is responsible for
+        rolling back the transaction (FR2.2) before returning.
+
+        No agent-specific fields (creci/bank/pix) are read or written here
+        anymore -- those are set once, at profile-creation time, and this
+        step never touches them.
+        """
+        Agent = request.env["real.estate.agent"].sudo()
+        existing_agent = Agent.search([("profile_id", "=", profile_record.id)], limit=1)
+        if existing_agent:
+            existing_agent.write({"user_id": user.id})
+            return existing_agent
+        return Agent.create(
+            {
+                "profile_id": profile_record.id,
+                "user_id": user.id,
+            }
+        )
 
     def _success_response(self, status_code, data, message, links=None):
         """Build success response"""
@@ -248,7 +332,7 @@ class InviteController(http.Controller):
             # - @require_session sets request.env user
             # - @require_company enforces company access
             requester = request.env.user
-            company_id = request.httprequest.headers.get("X-Company-ID")
+            company_id = request.httprequest.headers.get("X-Company-Id")
 
             if not requester or not requester.id or not company_id:
                 return self._error_response(
@@ -259,7 +343,7 @@ class InviteController(http.Controller):
                 company_id = int(company_id)
             except (TypeError, ValueError):
                 return self._error_response(
-                    400, "validation_error", "Invalid X-Company-ID header"
+                    400, "validation_error", "Invalid X-Company-Id header"
                 )
 
             # Get user record
@@ -310,9 +394,7 @@ class InviteController(http.Controller):
             settings = (
                 request.env["thedevkitchen.email.link.settings"].sudo().get_settings()
             )
-            company = (
-                request.env["res.company"].sudo().browse(company_id)
-            )
+            company = request.env["res.company"].sudo().browse(company_id)
             raw_token, token_record = token_service.generate_token(
                 user=user,
                 token_type="invite",
@@ -323,7 +405,10 @@ class InviteController(http.Controller):
             # Resend invite email
             try:
                 invite_service.send_invite_email(
-                    user, raw_token, settings.invite_link_ttl_hours, settings.frontend_base_url
+                    user,
+                    raw_token,
+                    settings.invite_link_ttl_hours,
+                    settings.frontend_base_url,
                 )
                 email_status = "sent"
             except Exception as email_error:

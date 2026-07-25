@@ -20,6 +20,8 @@ from .integration import test_proposal_list
 from .integration import test_proposal_attachments
 from .integration import test_proposal_expiration
 from .integration import test_validation_gaps
+# Feature 026: characterization test for agent.create() profile/user setdefault mechanism
+from .integration import test_agent_create_from_profile_and_user
 
 # Observer pattern tests
 from . import observers

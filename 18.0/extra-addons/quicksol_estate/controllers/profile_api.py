@@ -625,6 +625,20 @@ class ProfileApiController(http.Controller):
             ):
                 return error_response(404, "Profile not found")
 
+            # Feature 027 (FR5.2): agent-exclusive fields are only
+            # validated when profile_type resolves to 'agent' -- same
+            # conditional-validation pattern PROFILE_AGENT_FIELDS_SCHEMA
+            # already uses for create_profile since Feature 026.
+            is_agent_profile = profile.profile_type_id.code == "agent"
+            if is_agent_profile:
+                is_valid, agent_field_errors = (
+                    SchemaValidator.validate_profile_agent_update_fields(body)
+                )
+                if not is_valid:
+                    return error_response(
+                        400, f"Validation error: {agent_field_errors}"
+                    )
+
             # Build update vals
             update_vals = {"updated_at": datetime.now()}
 
@@ -644,25 +658,41 @@ class ProfileApiController(http.Controller):
             # Update profile
             profile.write(update_vals)
 
-            # Sync to agent extension if profile_type='agent' (FR3.4)
-            if profile.profile_type_id.code == "agent":
+            # Sync to agent extension if profile_type='agent' (FR3.4,
+            # extended by FR5.3 to also cover creci/bank_*/pix_key)
+            if is_agent_profile:
                 Agent = request.env["real.estate.agent"]
                 agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
                 if agent:
                     agent_update_vals = {}
-                    if "name" in body:
-                        agent_update_vals["name"] = body["name"]
-                    if "email" in body:
-                        agent_update_vals["email"] = body["email"]
-                    if "phone" in body:
-                        agent_update_vals["phone"] = body["phone"]
-                    if "mobile" in body:
-                        agent_update_vals["mobile"] = body["mobile"]
-                    if "hire_date" in body:
-                        agent_update_vals["hire_date"] = body["hire_date"]
+                    for field in [
+                        "name",
+                        "email",
+                        "phone",
+                        "mobile",
+                        "hire_date",
+                        "creci",
+                        "bank_name",
+                        "bank_account",
+                        "bank_account_type",
+                        "bank_branch",
+                        "pix_key",
+                    ]:
+                        if field in body:
+                            agent_update_vals[field] = body[field]
 
                     if agent_update_vals:
-                        agent.write(agent_update_vals)
+                        try:
+                            agent.write(agent_update_vals)
+                        except ValidationError as e:
+                            # FR5.4: duplicate creci -- roll back both the
+                            # profile write above and this failed agent
+                            # write, map to 409 (same pattern
+                            # create_profile uses since Feature 026).
+                            request.env.cr.rollback()
+                            if "já cadastrado" in str(e):
+                                return error_response(409, str(e))
+                            return error_response(400, str(e))
                         _logger.info(
                             f"Synced profile {profile.id} updates to agent {agent.id}"
                         )

@@ -41,3 +41,6 @@ from . import test_serialize_profile_agent_subobject
 
 # Feature 027: creci_number/creci_state filters on GET /api/v1/profiles
 from . import test_list_profiles_creci_filters
+
+# Feature 027: PUT /api/v1/profiles/<id> syncs agent-exclusive fields
+from . import test_update_profile_agent_fields

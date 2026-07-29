@@ -42,9 +42,7 @@ class TestProfileDeactivateReactivateAuthorization(TransactionCase):
         self.agent_user = make_user(
             "agentuser_027f5@example.com", "quicksol_estate.group_real_estate_agent"
         )
-        self.admin = make_user(
-            "admin_027f5@example.com", "base.group_system"
-        )
+        self.admin = make_user("admin_027f5@example.com", "base.group_system")
         self.controller = ProfileApiController()
 
     def test_owner_without_manager_group_is_authorized(self):

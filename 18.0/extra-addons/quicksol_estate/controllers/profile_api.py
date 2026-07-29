@@ -945,7 +945,11 @@ class ProfileApiController(http.Controller):
             response_data["_links"]["deactivate"] = f"/api/v1/profiles/{profile.id}"
 
             return success_response(
-                {"success": True, "message": "Profile reactivated successfully", "data": response_data}
+                {
+                    "success": True,
+                    "message": "Profile reactivated successfully",
+                    "data": response_data,
+                }
             )
 
         except Exception as e:

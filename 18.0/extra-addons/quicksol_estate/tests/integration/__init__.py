@@ -19,6 +19,7 @@ Guidelines (ADR-003):
 
 from . import test_event_bus_integration
 from . import test_rbac_owner_integration
+
 # Feature 013: Property Proposals
 from . import test_proposal_create
 from . import test_proposal_send

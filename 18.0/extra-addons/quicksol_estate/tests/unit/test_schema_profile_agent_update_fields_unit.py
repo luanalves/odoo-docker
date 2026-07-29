@@ -34,9 +34,7 @@ class TestProfileAgentUpdateFieldsSchema(unittest.TestCase):
             "bank_branch": "0001",
             "pix_key": "agent@example.com",
         }
-        is_valid, errors = SchemaValidator.validate_profile_agent_update_fields(
-            payload
-        )
+        is_valid, errors = SchemaValidator.validate_profile_agent_update_fields(payload)
         self.assertTrue(is_valid, errors)
         self.assertEqual(errors, [])
 

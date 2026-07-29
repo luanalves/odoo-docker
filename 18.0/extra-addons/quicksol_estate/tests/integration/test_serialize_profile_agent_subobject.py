@@ -99,25 +99,33 @@ class TestSerializeProfileAgentSubobject(TransactionCase):
 
     def test_batched_lookup_uses_prefetched_dict_not_extra_search(self):
         """FR1.4: when agent_by_profile_id is provided, _serialize_profile
-        must use it instead of issuing its own real.estate.agent.search()."""
-        agent_by_profile_id = {self.agent_profile.id: self.agent}
-        # Deliberately wrong prefetch value to prove the dict, not a fresh
-        # search(), drives the result.
+        must use it instead of issuing its own real.estate.agent.search().
+
+        fake_agent is deliberately keyed to self.agent_profile.id -- the
+        SAME profile being serialized, and the same profile_id a fresh
+        search() would independently resolve to self.agent. If
+        _serialize_profile ignored the passed-in dict and fell back to
+        search([("profile_id", "=", profile.id)]), it would find
+        self.agent (created first, real profile_id match) and this test
+        would fail -- only reading agent_by_profile_id itself yields
+        fake_agent.
+        """
         fake_agent = self.env["real.estate.agent"].create(
             {
-                "profile_id": self.tenant_profile.id,  # mismatched on purpose
-                "name": "Should Not Be Used",
+                "profile_id": self.agent_profile.id,
+                "name": "Should Be Used Instead Of Search",
+                "creci": "CRECI-SP 99999",
                 "cpf": "41183520360",
                 "email": "unused027@example.com",
                 "company_id": self.company.id,
             }
         )
-        agent_by_profile_id = {self.agent_profile.id: self.agent}
+        agent_by_profile_id = {self.agent_profile.id: fake_agent}
         data = self.controller._serialize_profile(
             self.agent_profile, agent_by_profile_id=agent_by_profile_id
         )
-        self.assertEqual(data["agent"]["id"], self.agent.id)
-        self.assertNotEqual(data["agent"]["id"], fake_agent.id)
+        self.assertEqual(data["agent"]["id"], fake_agent.id)
+        self.assertNotEqual(data["agent"]["id"], self.agent.id)
 
     def test_batched_lookup_missing_from_dict_yields_no_agent_subobject(self):
         """If a profile_id is absent from the prefetched dict (agent record

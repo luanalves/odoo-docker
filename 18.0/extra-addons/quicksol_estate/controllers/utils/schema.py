@@ -193,6 +193,39 @@ class SchemaValidator:
         },
     }
 
+    # Feature 027 (FR5.1): campos exclusivos de agente aceitos por
+    # PUT /api/v1/profiles/<id> -- superset de PROFILE_AGENT_FIELDS_SCHEMA
+    # (Feature 026, usado só no create): além de creci/bank_name/
+    # bank_account/pix_key, inclui bank_account_type e bank_branch, que o
+    # AGENT_UPDATE_SCHEMA legado (PUT /api/v1/agents/<id>) aceitava via
+    # allowed_fields no controller SEM nenhuma validação de schema -- esta
+    # spec fecha essa lacuna. Mesma regra da Feature 026: só é invocado pelo
+    # controller (profile_api.py::update_profile) DEPOIS de confirmar
+    # profile.profile_type_id.code == 'agent'; para qualquer outro tipo,
+    # esses campos são ignorados sem nenhuma tentativa de validação.
+    PROFILE_AGENT_UPDATE_FIELDS_SCHEMA = {
+        "required": [],
+        "optional": [
+            "creci",
+            "bank_name",
+            "bank_account",
+            "bank_account_type",
+            "bank_branch",
+            "pix_key",
+        ],
+        "types": {
+            "creci": str,
+            "bank_name": str,
+            "bank_account": str,
+            "bank_account_type": str,
+            "bank_branch": str,
+            "pix_key": str,
+        },
+        "constraints": {
+            "creci": AGENT_CREATE_SCHEMA["constraints"]["creci"],
+        },
+    }
+
     # Profile update schema (FR3.1)
     PROFILE_UPDATE_SCHEMA = {
         "required": [],
@@ -434,6 +467,17 @@ class SchemaValidator:
         meaningless (and unvalidated) for every other profile_type."""
         return SchemaValidator.validate_request(
             data, SchemaValidator.PROFILE_AGENT_FIELDS_SCHEMA
+        )
+
+    @staticmethod
+    def validate_profile_agent_update_fields(data):
+        """Validate the agent-exclusive fields on PUT /api/v1/profiles/<id>
+        (creci/bank_name/bank_account/bank_account_type/bank_branch/
+        pix_key). Feature 027 (FR5.2): only called by profile_api.py::
+        update_profile after confirming
+        profile.profile_type_id.code == 'agent'."""
+        return SchemaValidator.validate_request(
+            data, SchemaValidator.PROFILE_AGENT_UPDATE_FIELDS_SCHEMA
         )
 
     @staticmethod

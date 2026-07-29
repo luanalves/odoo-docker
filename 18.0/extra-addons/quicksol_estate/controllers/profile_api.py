@@ -185,6 +185,38 @@ class ProfileApiController(http.Controller):
 
         return data
 
+    def _resolve_profile_ids_by_agent_filters(self, env, creci_number, creci_state):
+        """Feature 027 (FR1.1/FR1.2): resolve profile_ids matching the
+        creci_number/creci_state filters via a single real.estate.agent
+        search(), for list_profiles to AND into its own domain. Takes env
+        as a plain param (not request.env) so this is unit-testable without
+        odoo.http.request.
+
+        Returns:
+            None if neither filter was provided (caller should not touch
+                the domain at all).
+            list[int] otherwise (possibly empty -- an empty list means
+                "filter applied, zero agents matched", which the caller
+                must turn into an impossible domain clause, not "no
+                filter").
+        """
+        if not creci_number and not creci_state:
+            return None
+
+        domain = []
+        if creci_number:
+            domain.append(("creci_number", "ilike", creci_number))
+        if creci_state:
+            domain.append(("creci_state", "=", creci_state.upper()))
+
+        agents = (
+            env["real.estate.agent"]
+            .sudo()
+            .with_context(active_test=False)
+            .search(domain)
+        )
+        return agents.mapped("profile_id").ids
+
     @http.route(
         "/api/v1/profiles",
         type="http",
@@ -431,6 +463,16 @@ class ProfileApiController(http.Controller):
                     domain.append(("active", "=", True))
                 elif is_active.lower() == "false":
                     domain.append(("active", "=", False))
+
+            # Feature 027 (FR1.1/FR1.2): creci_number/creci_state filters,
+            # equivalent to the removed GET /api/v1/agents?creci_number=...
+            creci_number = kwargs.get("creci_number")
+            creci_state = kwargs.get("creci_state")
+            agent_profile_ids = self._resolve_profile_ids_by_agent_filters(
+                request.env, creci_number, creci_state
+            )
+            if agent_profile_ids is not None:
+                domain.append(("id", "in", agent_profile_ids or [0]))
 
             # Pagination
             limit = min(int(kwargs.get("limit", 20)), 100)

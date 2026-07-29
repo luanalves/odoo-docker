@@ -24,6 +24,8 @@ from .integration import test_validation_gaps
 from .integration import test_agent_create_from_profile_and_user
 # Feature 027: _serialize_profile embeds batched agent sub-object
 from .integration import test_serialize_profile_agent_subobject
+# Feature 027: creci_number/creci_state filters on GET /api/v1/profiles
+from .integration import test_list_profiles_creci_filters
 
 # Observer pattern tests
 from . import observers

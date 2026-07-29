@@ -56,3 +56,7 @@ from . import test_deactivate_session_invalidation_all_profile_types
 
 # Feature 027 (FR6.4): sale_api.py agent link points at /api/v1/profiles/{id}
 from . import test_sale_serializer_agent_link
+
+# Feature 027 bugfix: GET /api/v1/profiles/<id> active_test=False parity
+# with list_profiles for deactivated profiles
+from . import test_get_profile_active_test

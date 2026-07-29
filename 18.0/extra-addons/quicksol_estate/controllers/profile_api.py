@@ -677,7 +677,9 @@ class ProfileApiController(http.Controller):
 
         try:
 
-            Profile = request.env["thedevkitchen.estate.profile"]
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
             profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
 
             if not profile:

@@ -16,13 +16,14 @@
 #     a raw modulo of the timestamp -- profile creation validates the CPF
 #     checksum server-side, and a random 11-digit number passes only ~1% of
 #     the time.
-#   - Step 7 verifies deactivation via GET /profiles?...&document=<doc>
-#     instead of GET /profiles/<id> -- the single-record GET does not pass
-#     active_test=False (unlike list_profiles), so it 404s on a just-
-#     deactivated profile. Flagged as a concern in task-10-report.md, not
-#     treated as a blocking regression (get_profile 404-ing on inactive
-#     records is plausibly intentional soft-delete/anti-enumeration
-#     behavior, not something Task 10 should adjudicate).
+#   - Step 7 was originally written to verify deactivation via
+#     GET /profiles?...&document=<doc> (list endpoint) instead of
+#     GET /profiles/<id>, because the single-record GET did not pass
+#     active_test=False (unlike list_profiles), so it 404'd on a just-
+#     deactivated profile. That bug is now fixed (get_profile.with_context
+#     (active_test=False), see profile_api.py) as a follow-up bugfix task
+#     inserted between Task 10 and Task 11 -- Step 7 now asserts directly
+#     against GET /profiles/<id>, which is the more direct check.
 #   - Step 2 creates a 'prospector' profile, not 'tenant' as the brief says
 #     -- PROFILE_CREATION_MATRIX in profile_api.py (pre-existing, Feature
 #     009/026) restricts Manager to
@@ -167,10 +168,10 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$API_BASE/profiles/$P
 assert_status "Owner DELETE" "200" "$STATUS"
 
 echo ""
-echo "Step 7: GET (via list, filtered by document) to confirm active=false"
-GET_RESPONSE=$(curl -s "$API_BASE/profiles?company_ids=$OWNER_COMPANY&document=$DOC" \
+echo "Step 7: GET /profiles/<id> directly to confirm active=false"
+GET_RESPONSE=$(curl -s "$API_BASE/profiles/$PROFILE_ID" \
     -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION")
-ACTIVE=$(echo "$GET_RESPONSE" | jq -r '.data[0].active')
+ACTIVE=$(echo "$GET_RESPONSE" | jq -r '.active')
 if [ "$ACTIVE" = "false" ]; then
     echo -e "${GREEN}✓ Profile is inactive${NC}"
 else

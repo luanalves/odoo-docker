@@ -50,3 +50,6 @@ from . import test_profile_deactivate_authorization
 
 # Feature 027: POST /api/v1/profiles/<id>/reactivate cascade
 from . import test_profile_reactivate_cascade
+
+# Feature 027: session invalidation on deactivate across all profile_type
+from . import test_deactivate_session_invalidation_all_profile_types

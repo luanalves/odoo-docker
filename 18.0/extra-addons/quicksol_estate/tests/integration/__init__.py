@@ -47,3 +47,6 @@ from . import test_update_profile_agent_fields
 
 # Feature 027: DELETE /api/v1/profiles/<id> owner/admin-only authorization
 from . import test_profile_deactivate_authorization
+
+# Feature 027: POST /api/v1/profiles/<id>/reactivate cascade
+from . import test_profile_reactivate_cascade

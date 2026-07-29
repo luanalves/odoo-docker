@@ -302,6 +302,43 @@ class ProfileApiController(http.Controller):
                             exc,
                         )
 
+    def _reactivate_profile_cascade(self, profile):
+        """Feature 027 (FR2): inverse of _deactivate_profile_cascade.
+        Deliberately never touches thedevkitchen.api.session -- a
+        previously invalidated session (Feature 023's proactive
+        invalidation) is never restored; the user must authenticate again."""
+        env = profile.env
+        profile.write(
+            {
+                "active": True,
+                "deactivation_date": False,
+                "deactivation_reason": False,
+            }
+        )
+
+        if profile.profile_type_id.code == "agent":
+            Agent = env["real.estate.agent"].with_context(active_test=False)
+            agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
+            if agent and not agent.active:
+                agent.write(
+                    {
+                        "active": True,
+                        "deactivation_date": False,
+                        "deactivation_reason": False,
+                    }
+                )
+                _logger.info(f"Cascaded reactivation to agent {agent.id}")
+
+        if profile.partner_id:
+            User = env["res.users"].with_context(active_test=False)
+            users = User.sudo().search([("partner_id", "=", profile.partner_id.id)])
+            for user_record in users:
+                if not user_record.active:
+                    user_record.write({"active": True})
+                    _logger.info(
+                        f"Reactivated user {user_record.id} linked to profile {profile.id}"
+                    )
+
     @http.route(
         "/api/v1/profiles",
         type="http",
@@ -855,6 +892,62 @@ class ProfileApiController(http.Controller):
 
         except Exception as e:
             _logger.exception(f"Error deleting profile {profile_id}")
+            return error_response(500, f"Internal server error: {str(e)}")
+
+    @http.route(
+        "/api/v1/profiles/<int:profile_id>/reactivate",
+        type="http",
+        auth="none",
+        methods=["POST"],
+        csrf=False,
+        cors="*",
+    )
+    @require_jwt
+    @require_session
+    @require_company
+    def reactivate_profile(self, profile_id, **kwargs):
+
+        try:
+
+            user = request.env.user
+
+            # Feature 027 (FR2.2/FR3): same owner/admin-only matrix as
+            # DELETE /profiles/<id>.
+            if not self._user_can_deactivate_or_reactivate_profile(user):
+                return error_response(
+                    403,
+                    "Only the company owner or a system admin can reactivate profiles",
+                )
+
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
+            profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
+
+            if not profile:
+                return error_response(404, "Profile not found")
+
+            # Company isolation check (anti-enumeration, ADR-008)
+            if (
+                request.user_company_ids
+                and profile.company_id.id not in request.user_company_ids
+            ):
+                return error_response(404, "Profile not found")
+
+            if profile.active:
+                return error_response(400, "Profile is already active")
+
+            self._reactivate_profile_cascade(profile)
+
+            response_data = self._serialize_profile(profile)
+            response_data["_links"]["deactivate"] = f"/api/v1/profiles/{profile.id}"
+
+            return success_response(
+                {"success": True, "message": "Profile reactivated successfully", "data": response_data}
+            )
+
+        except Exception as e:
+            _logger.exception(f"Error reactivating profile {profile_id}")
             return error_response(500, f"Internal server error: {str(e)}")
 
     @http.route(

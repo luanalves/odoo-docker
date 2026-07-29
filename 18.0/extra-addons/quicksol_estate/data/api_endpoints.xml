@@ -7383,6 +7383,26 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
             <field name="active" eval="True"/>
         </record>
 
+        <record id="api_endpoint_reactivate_profile" model="thedevkitchen.api.endpoint">
+            <field name="name">Reactivate Profile</field>
+            <field name="path">/api/v1/profiles/{id}/reactivate</field>
+            <field name="method">POST</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">Reactivate a previously deactivated profile</field>
+            <field name="description">Reactivates a thedevkitchen.estate.profile record (active=True) and cascades to the linked real.estate.agent (if profile_type is 'agent') and any linked res.users login. Authorization: owner or system admin only, for ANY profile_type (Feature 027). Never restores a previously invalidated thedevkitchen.api.session -- the user must log in again.
+
+**Path Parameter:**
+- id (integer): Profile id
+
+**Error Responses:**
+- 400 Bad Request: profile already active
+- 403 Forbidden: requester is not owner/admin
+- 404 Not Found: profile not found, or belongs to an inaccessible company</field>
+            <field name="active" eval="True"/>
+        </record>
+
         <record id="api_endpoint_list_profile_types" model="thedevkitchen.api.endpoint">
             <field name="name">List Profile Types</field>
             <field name="path">/api/v1/profile-types</field>

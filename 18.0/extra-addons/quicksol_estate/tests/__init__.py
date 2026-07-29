@@ -30,6 +30,8 @@ from .integration import test_list_profiles_creci_filters
 from .integration import test_update_profile_agent_fields
 # Feature 027: DELETE /api/v1/profiles/<id> owner/admin-only authorization
 from .integration import test_profile_deactivate_authorization
+# Feature 027: POST /api/v1/profiles/<id>/reactivate cascade
+from .integration import test_profile_reactivate_cascade
 
 # Observer pattern tests
 from . import observers

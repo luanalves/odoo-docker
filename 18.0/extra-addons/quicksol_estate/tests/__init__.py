@@ -28,6 +28,8 @@ from .integration import test_serialize_profile_agent_subobject
 from .integration import test_list_profiles_creci_filters
 # Feature 027: PUT /api/v1/profiles/<id> syncs agent-exclusive fields
 from .integration import test_update_profile_agent_fields
+# Feature 027: DELETE /api/v1/profiles/<id> owner/admin-only authorization
+from .integration import test_profile_deactivate_authorization
 
 # Observer pattern tests
 from . import observers

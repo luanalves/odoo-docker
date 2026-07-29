@@ -54,6 +54,21 @@ PROFILE_CREATION_MATRIX = {
 }
 
 
+# Feature 027 (FR3): DELETE /profiles/<id> and POST /profiles/<id>/reactivate
+# authorization -- deliberately narrower than PROFILE_CREATION_MATRIX above.
+# Restricted to owner/admin only, for ANY profile_type, after cross-checking
+# ADR-019 + security/groups.xml + security/ir.model.access.csv (managing
+# res.users, which both these endpoints cascade into, is Owner-only in this
+# project -- Manager/Director have no ACL on base.model_res_users at all)
+# and the invite authorization matrix already implemented in Feature 009
+# (specs/009-user-onboarding-password-management/spec.md), where Manager
+# can never act on a profile_type it isn't authorized to create.
+PROFILE_DEACTIVATE_REACTIVATE_GROUPS = [
+    "quicksol_estate.group_real_estate_owner",
+    "base.group_system",
+]
+
+
 class ProfileApiController(http.Controller):
 
     def _get_user_allowed_profile_type_ids(self, user):
@@ -216,6 +231,76 @@ class ProfileApiController(http.Controller):
             .search(domain)
         )
         return agents.mapped("profile_id").ids
+
+    def _user_can_deactivate_or_reactivate_profile(self, user):
+        """Feature 027 (FR3.1): explicit check of both authorized groups --
+        never rely on has_group('...manager') alone to also cover Owner,
+        since group_real_estate_owner does not imply
+        group_real_estate_manager in this project's security/groups.xml
+        (the bug class present in the legacy agent_api.py deactivate/
+        reactivate_agent). Takes user as a plain recordset, not request, so
+        it's unit-testable without mocking odoo.http.request."""
+        return any(
+            user.has_group(group_xml_id)
+            for group_xml_id in PROFILE_DEACTIVATE_REACTIVATE_GROUPS
+        )
+
+    def _deactivate_profile_cascade(self, profile, reason=None):
+        """Feature 027: extracted from delete_profile so the cascade logic
+        (profile -> agent -> user -> session) is callable without an HTTP
+        request, for direct unit testing (Task 7). Uses profile.env, not
+        request.env -- the recordset already carries the right env/cr."""
+        env = profile.env
+        profile.write(
+            {
+                "active": False,
+                "deactivation_date": datetime.now(),
+                "deactivation_reason": reason or "Deactivated via API",
+            }
+        )
+
+        if profile.profile_type_id.code == "agent":
+            Agent = env["real.estate.agent"]
+            agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
+            if agent and agent.active:
+                agent.write(
+                    {
+                        "active": False,
+                        "deactivation_date": datetime.now(),
+                        "deactivation_reason": reason or "Profile deactivated",
+                    }
+                )
+                _logger.info(f"Cascaded deactivation to agent {agent.id}")
+
+        if profile.partner_id:
+            User = env["res.users"]
+            users = User.sudo().search([("partner_id", "=", profile.partner_id.id)])
+            for user_record in users:
+                if user_record.active:
+                    user_record.write({"active": False})
+                    _logger.info(
+                        f"Deactivated user {user_record.id} linked to profile {profile.id}"
+                    )
+                    try:
+                        APISession = env["thedevkitchen.api.session"]
+                        active_sessions = APISession.sudo().search(
+                            [
+                                ("user_id", "=", user_record.id),
+                                ("is_active", "=", True),
+                            ]
+                        )
+                        if active_sessions:
+                            active_sessions.write({"is_active": False})
+                            _logger.info(
+                                "[CACHE] invalidated %d session(s) for user %d",
+                                len(active_sessions),
+                                user_record.id,
+                            )
+                    except Exception as exc:
+                        _logger.warning(
+                            "[CACHE] session invalidation during profile delete failed: %s",
+                            exc,
+                        )
 
     @http.route(
         "/api/v1/profiles",
@@ -723,6 +808,16 @@ class ProfileApiController(http.Controller):
 
         try:
 
+            user = request.env.user
+
+            # Feature 027 (FR3): owner/admin only, for ANY profile_type --
+            # breaking change, see spec-idea.md for the full justification.
+            if not self._user_can_deactivate_or_reactivate_profile(user):
+                return error_response(
+                    403,
+                    "Only the company owner or a system admin can deactivate profiles",
+                )
+
             # Parse optional body for deactivation_reason
             deactivation_reason = None
             try:
@@ -749,62 +844,7 @@ class ProfileApiController(http.Controller):
             if not profile.active:
                 return error_response(400, "Profile is already inactive")
 
-            # Soft delete profile
-            profile.write(
-                {
-                    "active": False,
-                    "deactivation_date": datetime.now(),
-                    "deactivation_reason": deactivation_reason or "Deactivated via API",
-                }
-            )
-
-            # Cascade to agent extension if profile_type='agent' (FR4.2)
-            if profile.profile_type_id.code == "agent":
-                Agent = request.env["real.estate.agent"]
-                agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
-                if agent and agent.active:
-                    agent.write(
-                        {
-                            "active": False,
-                            "deactivation_date": datetime.now(),
-                            "deactivation_reason": deactivation_reason
-                            or "Profile deactivated",
-                        }
-                    )
-                    _logger.info(f"Cascaded deactivation to agent {agent.id}")
-
-            # Cascade to linked res.users (FR4.2)
-            if profile.partner_id:
-                User = request.env["res.users"]
-                users = User.sudo().search([("partner_id", "=", profile.partner_id.id)])
-                for user_record in users:
-                    if user_record.active:
-                        user_record.write({"active": False})
-                        _logger.info(
-                            f"Deactivated user {user_record.id} linked to profile {profile.id}"
-                        )
-                        # Proactive session invalidation (T017: US2)
-                        # APISession.write({'is_active': False}) triggers the Redis override
-                        try:
-                            APISession = request.env["thedevkitchen.api.session"]
-                            active_sessions = APISession.sudo().search(
-                                [
-                                    ("user_id", "=", user_record.id),
-                                    ("is_active", "=", True),
-                                ]
-                            )
-                            if active_sessions:
-                                active_sessions.write({"is_active": False})
-                                _logger.info(
-                                    "[CACHE] invalidated %d session(s) for user %d",
-                                    len(active_sessions),
-                                    user_record.id,
-                                )
-                        except Exception as exc:
-                            _logger.warning(
-                                "[CACHE] session invalidation during profile delete failed: %s",
-                                exc,
-                            )
+            self._deactivate_profile_cascade(profile, reason=deactivation_reason)
 
             return success_response(
                 {

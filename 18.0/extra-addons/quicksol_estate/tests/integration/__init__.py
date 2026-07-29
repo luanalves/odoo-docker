@@ -35,3 +35,6 @@ from . import test_validation_gaps
 
 # Feature 026: characterization test for agent.create() profile/user setdefault mechanism
 from . import test_agent_create_from_profile_and_user
+
+# Feature 027: _serialize_profile embeds batched agent sub-object
+from . import test_serialize_profile_agent_subobject

@@ -22,6 +22,8 @@ from .integration import test_proposal_expiration
 from .integration import test_validation_gaps
 # Feature 026: characterization test for agent.create() profile/user setdefault mechanism
 from .integration import test_agent_create_from_profile_and_user
+# Feature 027: _serialize_profile embeds batched agent sub-object
+from .integration import test_serialize_profile_agent_subobject
 
 # Observer pattern tests
 from . import observers

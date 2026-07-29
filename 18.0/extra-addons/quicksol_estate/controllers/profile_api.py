@@ -76,8 +76,18 @@ class ProfileApiController(http.Controller):
         )
         return profile_types.ids
 
-    def _serialize_profile(self, profile):
-        """Serialize profile record to JSON dict with HATEOAS links"""
+    def _serialize_profile(self, profile, agent_by_profile_id=None):
+        """Serialize profile record to JSON dict with HATEOAS links.
+
+        agent_by_profile_id (dict[int, recordset] | None): when serializing
+        a paginated list, callers MUST pass a prefetched
+        {profile_id: agent_recordset} dict built via a single batched
+        search() (see list_profiles) instead of leaving this None -- that
+        avoids the N+1 query pattern that existed here since Feature
+        010/024 (one real.estate.agent.search() per row). get_profile
+        (single-record) may safely omit this and fall back to an
+        individual search(), since there's no N+1 risk for one record.
+        """
         data = {
             "id": profile.id,
             "name": profile.name,
@@ -124,16 +134,50 @@ class ProfileApiController(http.Controller):
             data["user_id"] = user.id
             data["_links"]["resend_invite"] = "/api/v1/users/resend-invite"
 
-        # Add agent extension link if profile_type='agent'
+        # Feature 027 (FR1.3/FR1.4): embed full agent sub-object for
+        # profile_type='agent', with field parity to the removed
+        # GET /api/v1/agents/{id}. Uses profile.env (not request.env) so
+        # this method has no dependency on odoo.http.request -- keeps it
+        # directly unit-testable.
         if profile.profile_type_id.code == "agent":
-            agent = (
-                request.env["real.estate.agent"]
-                .sudo()
-                .search([("profile_id", "=", profile.id)], limit=1)
-            )
+            if agent_by_profile_id is not None:
+                agent = agent_by_profile_id.get(profile.id)
+            else:
+                agent = (
+                    profile.env["real.estate.agent"]
+                    .sudo()
+                    .with_context(active_test=False)
+                    .search([("profile_id", "=", profile.id)], limit=1)
+                )
             if agent:
-                data["agent_id"] = agent.id
-                data["_links"]["agent"] = f"/api/v1/agents/{agent.id}"
+                data["agent_id"] = agent.id  # backward compat (Feature 026)
+                data["agent"] = {
+                    "id": agent.id,
+                    "creci": agent.creci,
+                    "creci_normalized": agent.creci_normalized,
+                    "creci_number": agent.creci_number,
+                    "creci_state": agent.creci_state,
+                    "bank_name": agent.bank_name,
+                    "bank_account": agent.bank_account,
+                    "bank_account_type": agent.bank_account_type,
+                    "pix_key": agent.pix_key,
+                    "active": agent.active,
+                    "deactivation_date": (
+                        agent.deactivation_date.isoformat()
+                        if agent.deactivation_date
+                        else None
+                    ),
+                    "deactivation_reason": agent.deactivation_reason,
+                    "user_id": agent.user_id.id if agent.user_id else None,
+                    "_links": {
+                        "properties": f"/api/v1/agents/{agent.id}/properties",
+                        "performance": f"/api/v1/agents/{agent.id}/performance",
+                        "commission_rules": f"/api/v1/agents/{agent.id}/commission-rules",
+                    },
+                }
+                # FR1.5/FR6.4: points at /api/v1/profiles/{id}, not the
+                # removed /api/v1/agents/{id}.
+                data["_links"]["agent"] = f"/api/v1/profiles/{profile.id}"
 
         # Add invite link if no user yet (partner_id exists but no user)
         if profile.partner_id and not profile.partner_id.user_ids:
@@ -401,8 +445,25 @@ class ProfileApiController(http.Controller):
                 .search(domain, limit=limit, offset=offset, order="name asc")
             )
 
+            # Feature 027 (FR1.4): resolve all agent sub-objects for this
+            # page in ONE query instead of one search() per row -- fixes
+            # the N+1 pattern that existed here since Feature 010/024.
+            agent_profile_ids = [
+                p.id for p in profiles if p.profile_type_id.code == "agent"
+            ]
+            agents = (
+                request.env["real.estate.agent"]
+                .sudo()
+                .with_context(active_test=False)
+                .search([("profile_id", "in", agent_profile_ids)])
+            )
+            agent_by_profile_id = {a.profile_id.id: a for a in agents}
+
             # Serialize profiles
-            profile_list = [self._serialize_profile(p) for p in profiles]
+            profile_list = [
+                self._serialize_profile(p, agent_by_profile_id=agent_by_profile_id)
+                for p in profiles
+            ]
 
             # HATEOAS pagination links (FR2.4)
             company_ids_str = ",".join(str(cid) for cid in requested_company_ids)

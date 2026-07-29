@@ -144,7 +144,9 @@ fi
 
 AGENT_LINK=$(echo "$INVITE_BODY" | jq -r '.links.agent')
 TESTS_RUN=$((TESTS_RUN + 1))
-if [ "$AGENT_LINK" = "/api/v1/agents/${AGENT_ID}" ]; then
+# Feature 027 (FR6.4): /api/v1/agents/{id} is removed; links.agent now
+# points at /api/v1/profiles/{profile_id} instead.
+if [ "$AGENT_LINK" = "/api/v1/profiles/${PROFILE_ID}" ]; then
   echo "PASS: links.agent present and correct"
   TESTS_PASSED=$((TESTS_PASSED + 1))
 else

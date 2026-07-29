@@ -34,6 +34,8 @@ from .integration import test_profile_deactivate_authorization
 from .integration import test_profile_reactivate_cascade
 # Feature 027: session invalidation on deactivate across all profile_type
 from .integration import test_deactivate_session_invalidation_all_profile_types
+# Feature 027 (FR6.4): sale_api.py agent link points at /api/v1/profiles/{id}
+from .integration import test_sale_serializer_agent_link
 
 # Observer pattern tests
 from . import observers

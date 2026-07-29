@@ -209,9 +209,10 @@ class InviteController(http.Controller):
                 "profile": f"/api/v1/profiles/{profile_id}",
             }
 
-            # Feature 026: HATEOAS link to the linked/created agent record
+            # Feature 027 (FR6.4): /api/v1/agents/{id} is removed;
+            # /api/v1/profiles/{id} already exposes the agent sub-object.
             if agent_id:
-                links["agent"] = f"/api/v1/agents/{agent_id}"
+                links["agent"] = f"/api/v1/profiles/{profile_id}"
 
             return self._success_response(
                 201,

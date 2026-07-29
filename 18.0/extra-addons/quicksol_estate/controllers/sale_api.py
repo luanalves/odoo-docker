@@ -85,7 +85,12 @@ class SaleApiController(http.Controller):
         if sale.property_id:
             links["property"] = f"/api/v1/properties/{sale.property_id.id}"
         if sale.agent_id:
-            links["agent"] = f"/api/v1/agents/{sale.agent_id.id}"
+            # Feature 027 (FR6.4): /api/v1/agents/{id} is removed; point at
+            # the unified profile instead. Legacy agents created before
+            # Feature 010 have no profile_id -- omit the link rather than
+            # build a URL that 404s.
+            if sale.agent_id.profile_id:
+                links["agent"] = f"/api/v1/profiles/{sale.agent_id.profile_id.id}"
 
         return {
             "id": sale.id,

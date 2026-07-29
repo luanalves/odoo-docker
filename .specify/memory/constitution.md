@@ -1,5 +1,43 @@
 <!--
-Sync Impact Report - Constitution v1.9.1
+Sync Impact Report - Constitution v1.10.0
+==========================================
+
+Version Change: 1.9.1 → 1.10.0
+Change Type: MINOR (new RBAC/authorization patterns + architectural pattern documented from Feature 027)
+Date: 2026-07-29
+
+Sections Modified:
+- Security Requirements → added "Explicit Group Check for Owner (Owner ≠ implies Manager)": when
+  authorizing an Owner-restricted action, check `owner OR admin` explicitly over a list of group XML IDs;
+  never assume checking `manager` alone also covers `owner` via `implied_ids`.
+- Security Requirements → added "res.users Management is Owner-Only, Even Transitively (via Cascade)":
+  any endpoint that cascades into `res.users` fields inherits the same Owner-only restriction already
+  codified for direct user management, regardless of the endpoint's nominal subject.
+- Architectural Patterns → added "Deliberate Authorization Hardening as a Cross-Cutting Fix (with
+  Cross-Checking Against Existing Matrices)": when hardening authorization broadly to fix an
+  inconsistency between a protected path and an unprotected legacy path, the resulting matrix MUST be
+  cross-checked against every ACL and pre-existing authorization matrix touching the same entities.
+- Reference Implementations → added Feature 027 (Agent/Profile Endpoint Unification) entry; updated the
+  closing "Use Feature X for..." summary paragraph to include it.
+
+Removed Sections:
+- (none)
+
+Follow-up TODOs:
+- (none — all three patterns already have a validated reference implementation in Feature 027)
+
+Previous Amendments:
+- 2026-06-08 (v1.9.1 Feature 023 Redis cache TTL clarifications)
+- 2026-06-08 (v1.9.0 Feature 023 Redis cache patterns initial)
+- 2026-06-03 (v1.8.0 Feature 022 SaaS Admin channel separation)
+- 2026-05-08 (v1.7.0 Feature 017 binary upload patterns)
+- 2026-05-03 (v1.6.0 Feature 015 service pipeline patterns)
+- 2026-02-16 (v1.3.0 Feature 009 security patterns)
+- 2026-02-08 (v1.2.0 Feature 007 reference implementation)
+-->
+
+<!--
+Sync Impact Report - Constitution v1.9.1 (historical)
 ========================================
 
 Version Change: 1.9.0 → 1.9.1
@@ -657,6 +695,39 @@ def _invalidate_user_sessions(self, user):
 
 **Rationale**: Session invalidation prevents session hijacking after password change. Attacker with stolen session token loses access. User receives security notification. Audit log enables forensic analysis.
 
+### Explicit Group Check for Owner (Owner ≠ implies Manager) (Feature 027)
+When authorizing an action restricted to the company Owner, check `owner OR admin` explicitly against a list of group XML IDs — never assume that checking only `manager` also covers `owner` via Odoo's `implied_ids` group hierarchy:
+
+```python
+PROFILE_DEACTIVATE_REACTIVATE_GROUPS = [
+    "quicksol_estate.group_real_estate_owner",
+    "base.group_system",
+]
+
+def _user_can_deactivate_or_reactivate_profile(self, user):
+    return any(
+        user.has_group(group_xml_id)
+        for group_xml_id in PROFILE_DEACTIVATE_REACTIVATE_GROUPS
+    )
+```
+
+**Why this matters**: In this project's `security/groups.xml`, `group_real_estate_owner` does **not** imply `group_real_estate_manager` (or vice versa) — they are siblings, not a hierarchy. A check that only tests `has_group('...manager')`, assuming it also passes for Owner, silently locks Owners out (or, in the inverse mistake, silently authorizes Manager for an Owner-only action). This exact bug class existed in the legacy `agent_api.py` deactivate/reactivate endpoints (removed in Feature 027) before being fixed and generalized to `/api/v1/profiles`.
+
+**Rationale**: Group hierarchy in Odoo is opt-in per `implied_ids`, not inferred from role seniority. Every authorization check MUST enumerate its accepted groups explicitly and test each with `has_group()` — treating "Owner implies Manager" (or any other unverified hierarchy assumption) as true is a recurring, easy-to-introduce bug class.
+
+### res.users Management is Owner-Only, Even Transitively (via Cascade) (Feature 027)
+Any endpoint that cascades into `res.users` fields (e.g. `active`) inherits the same Owner-only authorization restriction already codified for direct user management (ADR-019 + `security/ir.model.access.csv`) — **regardless of the endpoint's nominal subject**. Manager and Director, even with broad CRUD authority over `profile`/`agent`, do NOT gain authorization over `res.users` just because the endpoint is nominally "about a profile":
+
+```python
+def _deactivate_profile_cascade(self, profile, reason=None):
+    """profile -> agent -> res.users -> session, all gated by the SAME
+    owner/admin-only check as the endpoint that calls this — never a
+    weaker one, even though only the last hop touches res.users."""
+    ...
+```
+
+**Rationale**: `res.users` is the most sensitive entity a "profile" endpoint can transitively touch — deactivating it locks out a login. Authorization for the whole cascade must be no weaker than the strictest resource it touches, not the nominal resource of the endpoint (`profile`). Any future endpoint that cascades into `res.users` (directly or through an intermediate model) MUST apply this same rule.
+
 ### SaaS Admin Channel Separation Patterns (Feature 022)
 The SaaS Admin (`base.group_system`) is a platform-level role above all business profiles. It operates
 exclusively through the Odoo web interface — never through the REST API. All patterns below enforce this
@@ -757,6 +828,14 @@ For tag entities where some tags must be immutable and drive business rules:
 5. **UI**: Read-only display in form views; CRUD restricted in controllers (403 for `is_system` writes).
 
 **Rationale**: Some tags carry semantic weight beyond categorization (e.g., `closed` = locks pipeline). Marking them as system prevents accidental rename/deletion that would break business logic, while still allowing user-defined tags freely.
+
+### Deliberate Authorization Hardening as a Cross-Cutting Fix (with Cross-Checking Against Existing Matrices) (Feature 027)
+When an authorization inconsistency is discovered between an already-protected path and an unprotected legacy path for the same underlying resource (e.g. `agent`-typed profiles were owner/admin-gated on deactivate, but every other `profile_type` was not), the fix MAY legitimately be applied broadly — to all affected types/resources at once, not just the one where the gap was found:
+1. **Broad hardening is acceptable** when the inconsistency has no principled reason to exist (here: there is no reason deactivating a `tenant` profile should be less protected than deactivating an `agent` profile).
+2. **The resulting role matrix MUST be cross-checked against every ACL (`ir.model.access.csv`) and pre-existing authorization matrix touching the same entities before being finalized** — not just the one path where the gap was noticed. Feature 027's Task 5 cross-checked its new owner/admin-only deactivate/reactivate matrix against `security/groups.xml`, `security/ir.model.access.csv`'s `res.users` ACLs, and Feature 009's invite-authorization matrix, confirming none of them already grant Manager/Director an authority the new hardening would need to preserve.
+3. **Document the breaking-change decision explicitly** (spec FR + OpenAPI description) rather than silently narrowing behavior — callers previously authorized under the inconsistent rule will start receiving 403s.
+
+**Rationale**: A naive "harden this one broken case" fix leaves the same inconsistency latent for every other type/resource sharing the underlying pattern — the bug just moves, it doesn't disappear. But broadening the fix without cross-checking existing matrices risks *removing* a permission some other, already-correct part of the system deliberately grants — trading one bug for another. Both the "harden broadly" and the "verify against everything else that touches this resource" steps are required together.
 
 ## Quality & Testing Standards
 
@@ -870,7 +949,22 @@ For tag entities where some tags must be immutable and drive business rules:
 - **Spec**: `specs/023-redis-session-cache/spec.md`
 - **Plan**: `specs/023-redis-session-cache/plan.md`
 
-Use Feature 007 for standard CRUD patterns with HATEOAS. Use Feature 009 for security-sensitive flows requiring token-based authentication, anti-enumeration, and session management. Use Feature 013 for FSM-driven domain entities with concurrent access control, FIFO queues, and async notifications. Use Feature 015 for kanban-style pipeline domains with stage gates, conditional uniqueness, system tags, and aggregation endpoints. Use Feature 017 for binary file upload/download patterns with magic bytes validation, per-type quantity limits, and FR6.9-compliant error envelopes. Use Feature 022 for SaaS Admin cross-company access patterns (record rule overrides, API login block, noupdate compatibility). Use Feature 023 for Redis cache patterns on auth hot paths (JWT lookup, session lookup, ORM field cache injection, write hook invalidation, graceful fallback).
+**Feature 027 — Agent/Profile Endpoint Unification** (Owner-Only Authorization Hardening + Batched Sub-Object Embedding Template):
+- **Problem**: `real.estate.agent` list/get/update/deactivate/reactivate lived on a separate `/api/v1/agents` controller with its own (inconsistent, in places incorrect) authorization, duplicating the already-unified `thedevkitchen.estate.profile` read/write path established in Feature 026. `DELETE /api/v1/profiles/{id}` (deactivate) was also unrestricted for every `profile_type` except `agent`.
+- **Solution**: Extended `profile_api.py` to own list/get/update/deactivate/reactivate for every `profile_type`, including `agent` (via a batched `agent` sub-object embedded in `_serialize_profile`); removed the 5 now-redundant `/api/v1/agents` CRUD routes outright (no deprecation window, same precedent as Feature 026).
+- **N+1 Fix**: `list_profiles` now does ONE batched `real.estate.agent.search([("profile_id","in",[...])])` per page instead of one `search()` per row, building an `agent_by_profile_id` dict passed into `_serialize_profile(profile, agent_by_profile_id=None)` — the `None` default keeps `get_profile`'s single-record path unchanged (a single extra query is fine when only one record is being serialized).
+- **Authorization Hardening**: `DELETE /api/v1/profiles/{id}` and the new `POST /api/v1/profiles/{id}/reactivate` are owner/admin-only for EVERY `profile_type` — see "Explicit Group Check for Owner" and "Deliberate Authorization Hardening as a Cross-Cutting Fix" patterns above, both introduced by this feature.
+- **Atomic Cascade with Deliberate Asymmetry**: `_deactivate_profile_cascade`/`_reactivate_profile_cascade` mirror each other (profile → agent-if-agent-type → res.users), except reactivate NEVER restores a `thedevkitchen.api.session` row invalidated by a prior deactivate — the user must authenticate again (extends Feature 023's proactive session-invalidation guarantee to the reactivate path, tested across all 6 `profile_type` values with linked users, not just `agent`).
+- **Testability without HTTP mocking**: every extracted helper (`_user_can_deactivate_or_reactivate_profile`, `_deactivate_profile_cascade`, `_reactivate_profile_cascade`, `_resolve_profile_ids_by_agent_filters`) takes plain recordsets/params instead of `odoo.http.request`, enabling direct `TransactionCase` unit coverage without mocking Werkzeug internals — this project's standing testing convention.
+- **API**: `POST /api/v1/profiles/{id}/reactivate` (new); `GET /api/v1/profiles` gains `creci_number`/`creci_state` filters; 5 legacy `/api/v1/agents` routes removed (list/get/update/deactivate/reactivate — assignments/properties/performance/commission-rules/ranking are untouched, they stay on `agent_api.py`).
+- **Testing**: 20+ new `TransactionCase` tests across 7 files, 5 new E2E bash scripts (`integration_tests/test_us27_s*.sh`) covering the full authorization matrix, reactivate cascade, agent sub-object/filter parity, and legacy-route-removal verification.
+- **Location**: `18.0/extra-addons/quicksol_estate/controllers/profile_api.py`
+- **Spec**: `specs/027-agent-profile-endpoint-unification/spec-idea.md`
+- **Plan**: `specs/027-agent-profile-endpoint-unification/plan-idea.md`
+- **Flowcharts**: `specs/027-agent-profile-endpoint-unification/flowcharts.md`
+- **ADRs Referenced**: ADR-008 (anti-enumeration), ADR-011 (security decorators), ADR-015 (soft delete), ADR-019 (RBAC profiles)
+
+Use Feature 007 for standard CRUD patterns with HATEOAS. Use Feature 009 for security-sensitive flows requiring token-based authentication, anti-enumeration, and session management. Use Feature 013 for FSM-driven domain entities with concurrent access control, FIFO queues, and async notifications. Use Feature 015 for kanban-style pipeline domains with stage gates, conditional uniqueness, system tags, and aggregation endpoints. Use Feature 017 for binary file upload/download patterns with magic bytes validation, per-type quantity limits, and FR6.9-compliant error envelopes. Use Feature 022 for SaaS Admin cross-company access patterns (record rule overrides, API login block, noupdate compatibility). Use Feature 023 for Redis cache patterns on auth hot paths (JWT lookup, session lookup, ORM field cache injection, write hook invalidation, graceful fallback). Use Feature 027 for owner-only authorization hardening applied broadly across profile_type with existing-matrix cross-checks, batched sub-object embedding to avoid N+1 in list serializers, and atomic multi-model cascades with a deliberate deactivate/reactivate asymmetry (session invalidation never reversed).
 
 ### Required Tests per Feature
 - **Unit**: Services, helpers, serializers, decorators
@@ -953,4 +1047,4 @@ Para criação de testes, **DEVEM ser utilizados** os prompts e agents especiali
 - Constitution provides strategic direction; copilot-instructions provides tactical rules
 - Conflicts resolved in favor of constitution (strategic supersedes tactical)
 
-**Version**: 1.9.0 | **Ratified**: 2026-01-03 | **Last Amended**: 2026-06-08
+**Version**: 1.10.0 | **Ratified**: 2026-01-03 | **Last Amended**: 2026-07-29

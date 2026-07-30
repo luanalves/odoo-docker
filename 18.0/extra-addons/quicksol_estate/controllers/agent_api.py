@@ -17,6 +17,26 @@ _logger = logging.getLogger(__name__)
 
 
 class AgentApiController(http.Controller):
+
+    @staticmethod
+    def _agent_hateoas_link(agent):
+        """Feature 027 (FR6.4): HATEOAS link to an agent.
+
+        GET /api/v1/agents/{id} was removed, so the link points at the
+        unified /api/v1/profiles/{profile_id} (whose response embeds the
+        full `agent` sub-object). Legacy agents created before Feature 010
+        have no profile_id -- return None so the caller omits the link
+        entirely rather than emitting a URL that 404s. Takes a plain
+        recordset, so it is unit-testable without odoo.http.request."""
+        if not agent or not agent.profile_id:
+            return None
+        return {
+            "href": f"/api/v1/profiles/{agent.profile_id.id}",
+            "rel": "agent",
+            "type": "GET",
+            "title": "Get agent details",
+        }
+
     # ==================== ASSIGNMENT ENDPOINTS ====================
 
     @http.route(
@@ -624,19 +644,9 @@ class AgentApiController(http.Controller):
                 },
             ]
 
-            # Feature 027 (FR6.4): /api/v1/agents/{id} is removed; point at
-            # the unified profile instead. Legacy agents created before
-            # Feature 010 have no profile_id -- omit the link rather than
-            # build a URL that 404s.
-            if assignment.agent_id and assignment.agent_id.profile_id:
-                assignment_data["links"].append(
-                    {
-                        "href": f"/api/v1/profiles/{assignment.agent_id.profile_id.id}",
-                        "rel": "agent",
-                        "type": "GET",
-                        "title": "Get agent details",
-                    }
-                )
+            agent_link = self._agent_hateoas_link(assignment.agent_id)
+            if agent_link:
+                assignment_data["links"].append(agent_link)
 
             if assignment.property_id:
                 assignment_data["links"].append(

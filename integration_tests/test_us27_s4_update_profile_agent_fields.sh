@@ -86,7 +86,54 @@ if [ "$STATUS" = "400" ]; then echo -e "${GREEN}✓ Malformed creci -> 400${NC}"
 else echo -e "${RED}✗ Expected 400, got $STATUS${NC}"; FAILURES=$((FAILURES + 1)); fi
 
 echo ""
-echo "Step 4: Legacy PUT /api/v1/agents/<id> -- covered by test_us27_s5 once Task 9 removes it"
+echo "Step 4: test_update_profile_creci_conflict_returns_409_with_rollback (FR5.4)"
+# Second agent profile owning a *different* CRECI...
+DOC2=$(gen_valid_cpf "$(printf '%09d' $(( (TIMESTAMP + 31) % 1000000000 )))")
+CREATE2=$(curl -s -X POST "$API_BASE/profiles" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION" \
+    -d "{\"name\": \"US27S4 Agent B $TIMESTAMP\", \"company_id\": $OWNER_COMPANY, \"document\": \"$DOC2\", \"email\": \"us27s4b_$TIMESTAMP@example.com\", \"birthdate\": \"1990-01-01\", \"profile_type_id\": $AGENT_TYPE_ID}")
+PROFILE2_ID=$(echo "$CREATE2" | jq -r '.id // empty')
+[ -z "$PROFILE2_ID" ] && { echo -e "${RED}✗ Failed to create second profile: $CREATE2${NC}"; FAILURES=$((FAILURES + 1)); }
+
+CONFLICT_CRECI="CRECI-RJ ${TIMESTAMP: -6}"
+UPD2=$(curl -s -X PUT "$API_BASE/profiles/$PROFILE2_ID" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION" \
+    -d "{\"creci\": \"$CONFLICT_CRECI\"}")
+if [ "$(echo "$UPD2" | jq -r '.agent.creci // empty')" = "" ]; then
+    echo -e "${RED}✗ Could not seed the conflicting CRECI on profile B: $UPD2${NC}"; FAILURES=$((FAILURES + 1))
+fi
+
+# Baseline of profile A's own mutable fields, so we can prove the rollback
+# covers the WHOLE request (profile.write happens BEFORE the agent.write
+# that raises), not just the failed agent write.
+BEFORE=$(curl -s "$API_BASE/profiles/$PROFILE_ID" -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION")
+NAME_BEFORE=$(echo "$BEFORE" | jq -r '.name')
+BANK_BEFORE=$(echo "$BEFORE" | jq -r '.agent.bank_name')
+CRECI_BEFORE=$(echo "$BEFORE" | jq -r '.agent.creci')
+
+STATUS=$(curl -s -o /tmp/us27s4_conflict.json -w "%{http_code}" -X PUT "$API_BASE/profiles/$PROFILE_ID" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION" \
+    -d "{\"name\": \"SHOULD NOT PERSIST $TIMESTAMP\", \"bank_name\": \"SHOULD NOT PERSIST\", \"creci\": \"$CONFLICT_CRECI\"}")
+if [ "$STATUS" = "409" ]; then
+    echo -e "${GREEN}✓ Duplicate CRECI -> 409 ($(jq -r '.message // .error' /tmp/us27s4_conflict.json))${NC}"
+else
+    echo -e "${RED}✗ Expected 409, got $STATUS: $(cat /tmp/us27s4_conflict.json)${NC}"; FAILURES=$((FAILURES + 1))
+fi
+rm -f /tmp/us27s4_conflict.json
+
+AFTER=$(curl -s "$API_BASE/profiles/$PROFILE_ID" -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION")
+NAME_AFTER=$(echo "$AFTER" | jq -r '.name')
+BANK_AFTER=$(echo "$AFTER" | jq -r '.agent.bank_name')
+CRECI_AFTER=$(echo "$AFTER" | jq -r '.agent.creci')
+if [ "$NAME_AFTER" = "$NAME_BEFORE" ] && [ "$BANK_AFTER" = "$BANK_BEFORE" ] && [ "$CRECI_AFTER" = "$CRECI_BEFORE" ]; then
+    echo -e "${GREEN}✓ Rollback covered the whole request: name/bank_name/creci all unchanged${NC}"
+else
+    echo -e "${RED}✗ Partial write committed -- name '$NAME_BEFORE'->'$NAME_AFTER', bank '$BANK_BEFORE'->'$BANK_AFTER', creci '$CRECI_BEFORE'->'$CRECI_AFTER'${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo ""
+echo "Step 5: Legacy PUT /api/v1/agents/<id> -- covered by test_us27_s5 once Task 9 removes it"
 
 echo ""
 echo "========================================"

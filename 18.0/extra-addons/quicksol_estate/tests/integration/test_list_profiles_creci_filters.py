@@ -50,17 +50,26 @@ class TestResolveProfileIdsByAgentFilters(TransactionCase):
         )
         self.assertIsNone(result)
 
+    # NOTE: _resolve_profile_ids_by_agent_filters searches real.estate.agent
+    # DB-wide (it has no company scope -- list_profiles applies the company
+    # domain afterwards), so these assertions deliberately check membership
+    # of this test's own fixtures rather than exact list equality. An exact
+    # match would only hold on a pristine database and breaks as soon as any
+    # other agent in the dev DB happens to share the CRECI state/number --
+    # which the Feature 027 E2E scripts routinely create.
     def test_creci_number_ilike_filter(self):
         result = self.controller._resolve_profile_ids_by_agent_filters(
             self.env, creci_number="12345", creci_state=None
         )
-        self.assertEqual(result, [self.profile_sp.id])
+        self.assertIn(self.profile_sp.id, result)
+        self.assertNotIn(self.profile_rj.id, result)
 
     def test_creci_state_exact_case_insensitive_filter(self):
         result = self.controller._resolve_profile_ids_by_agent_filters(
             self.env, creci_number=None, creci_state="rj"
         )
-        self.assertEqual(result, [self.profile_rj.id])
+        self.assertIn(self.profile_rj.id, result)
+        self.assertNotIn(self.profile_sp.id, result)
 
     def test_no_match_returns_empty_list_not_none(self):
         """Empty list (not None) signals 'filter was applied, nothing

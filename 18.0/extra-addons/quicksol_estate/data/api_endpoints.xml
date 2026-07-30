@@ -7151,6 +7151,8 @@ Optional query parameters:
 - document (string): filter by exact CPF/CNPJ (normalized before matching)
 - name (string): case-insensitive partial match
 - active (string): "true" or "false" (default: only active)
+- creci_number (string, Feature 027): filter agent-typed profiles by CRECI number (ilike substring match on the linked real.estate.agent record). No match -> empty list, not an error.
+- creci_state (string, Feature 027): filter agent-typed profiles by CRECI state (exact, case-insensitive match on the linked real.estate.agent record). No match -> empty list, not an error.
 - limit (integer, default 20, max 100)
 - offset (integer, default 0)
 

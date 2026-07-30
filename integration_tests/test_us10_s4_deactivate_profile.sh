@@ -143,9 +143,16 @@ fi
 
 echo -e "${GREEN}✓ Profile soft deleted (is_active=false)${NC}"
 
-# Step 4: Test already inactive → 404
+# Step 4: Test already inactive → 400
+# Feature 027 (I-6): delete_profile now searches with active_test=False
+# (matching get_profile/list_profiles/reactivate_profile), so it can find
+# an already-inactive profile and reach its own "already inactive" check
+# instead of 404ing before ever reaching it. 400 is the correct/intended
+# response here (owner as delete_profile's own code has always said),
+# not 404 -- the old 404 only happened because the profile was invisible
+# to the search, which was itself the bug Feature 027 fixed.
 echo ""
-echo "Step 4: Testing delete already inactive profile → 404..."
+echo "Step 4: Testing delete already inactive profile → 400..."
 DELETE_AGAIN=$(curl -s -w "\n%{http_code}" -X DELETE "$API_BASE/profiles/$PROFILE_ID?company_ids=$OWNER_COMPANY" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $BEARER_TOKEN" \
@@ -155,12 +162,12 @@ DELETE_AGAIN=$(curl -s -w "\n%{http_code}" -X DELETE "$API_BASE/profiles/$PROFIL
     }")
 
 HTTP_CODE=$(echo "$DELETE_AGAIN" | tail -n1)
-if [ "$HTTP_CODE" != "404" ]; then
-    echo -e "${RED}✗ Expected 404, got $HTTP_CODE${NC}"
+if [ "$HTTP_CODE" != "400" ]; then
+    echo -e "${RED}✗ Expected 400, got $HTTP_CODE${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✓ Delete inactive profile returns 404 (not found)${NC}"
+echo -e "${GREEN}✓ Delete inactive profile returns 400 (already inactive)${NC}"
 
 # Step 5: Test agent extension cascade deactivation
 echo ""

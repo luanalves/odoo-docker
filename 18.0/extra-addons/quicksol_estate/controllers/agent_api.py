@@ -624,10 +624,14 @@ class AgentApiController(http.Controller):
                 },
             ]
 
-            if assignment.agent_id:
+            # Feature 027 (FR6.4): /api/v1/agents/{id} is removed; point at
+            # the unified profile instead. Legacy agents created before
+            # Feature 010 have no profile_id -- omit the link rather than
+            # build a URL that 404s.
+            if assignment.agent_id and assignment.agent_id.profile_id:
                 assignment_data["links"].append(
                     {
-                        "href": f"/api/v1/agents/{assignment.agent_id.id}",
+                        "href": f"/api/v1/profiles/{assignment.agent_id.profile_id.id}",
                         "rel": "agent",
                         "type": "GET",
                         "title": "Get agent details",

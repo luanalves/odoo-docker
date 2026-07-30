@@ -4123,7 +4123,7 @@
                 }
               ]
             },
-            "description": "**Authentication:** Bearer Token + Session ID required\n**Multi-tenancy:** Company isolation active (@require_company)\n\n**IMPORTANT:** Soft delete - sets active=false, preserves data.\n\n**Optional:** deactivation_reason\n\n**Behavior:** Sets active=false, deactivation_date, cascades to agent extension, deactivates linked res.users\n\n**Response 200:** Success with deactivation details\n**Error 404:** Not found or already inactive"
+            "description": "**Authentication:** Bearer Token + Session ID required\n**Multi-tenancy:** Company isolation active (@require_company)\n\n**IMPORTANT:** Soft delete - sets active=false, preserves data.\n\n**BREAKING CHANGE (Feature 027):** Authorization is now owner or system admin only, for ANY profile_type -- same matrix as Reactivate Profile. This endpoint previously had NO group check; Manager/Director could call it and now return 403 (it cascades to res.users.active, an Owner-only rule per ADR-019 / ir.model.access.csv).\n\n**Optional:** deactivation_reason\n\n**Behavior:** Sets active=false, deactivation_date, cascades to agent extension, deactivates linked res.users and invalidates active sessions\n\n**Response 200:** Success with deactivation details\n**Error 400:** Profile is already inactive\n**Error 403:** Requester is not owner/admin (includes Manager and Director)\n**Error 404:** Not found, or belongs to an inaccessible company"
           }
         },
         {

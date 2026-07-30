@@ -7242,7 +7242,9 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
             <field name="protected" eval="True"/>
             <field name="tags">Profiles</field>
             <field name="summary">Soft-delete (deactivate) a profile</field>
-            <field name="description">Deactivates a thedevkitchen.estate.profile record (soft delete, ADR-015 -- `active=False`, never a hard delete). Cascades to the linked real.estate.agent (if profile_type is 'agent') and to any linked res.users login, deactivating both and invalidating active sessions.
+            <field name="description">Deactivates a thedevkitchen.estate.profile record (soft delete, ADR-015 -- `active=False`, never a hard delete). Cascades to the linked real.estate.agent (if profile_type is 'agent') and to any linked res.users login, deactivating both and invalidating active sessions. Authorization: owner or system admin only, for ANY profile_type (Feature 027).
+
+**BREAKING CHANGE (Feature 027, module 18.0.7.0.0):** this endpoint previously had NO group check -- any authenticated user with access to the profile's company could deactivate any profile. It now requires `quicksol_estate.group_real_estate_owner` OR `base.group_system`. Manager and Director, who could call it before, now receive 403 (these endpoints cascade to res.users.active, and managing res.users is an Owner-only rule per ADR-019 and security/ir.model.access.csv).
 
 **Path Parameter:**
 - id (integer): Profile id
@@ -7252,6 +7254,7 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
 
 **Error Responses:**
 - 400 Bad Request: profile already inactive
+- 403 Forbidden: requester is not owner/admin (includes Manager and Director)
 - 404 Not Found: profile not found, or belongs to an inaccessible company</field>
             <field name="request_schema"><![CDATA[
 {

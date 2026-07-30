@@ -97,7 +97,7 @@ Feature 026 (corrected 2026-07-23): when the target profile's type is 'agent', t
         "resend_invite": {"type": "string", "example": "/api/v1/users/resend-invite"},
         "collection":    {"type": "string", "example": "/api/v1/users"},
         "profile":       {"type": "string", "example": "/api/v1/profiles/17"},
-        "agent":         {"type": "string", "example": "/api/v1/agents/8", "description": "Feature 026: only present when the target profile's type is 'agent'"}
+        "agent":         {"type": "string", "example": "/api/v1/profiles/17", "description": "Only present when the target profile's type is 'agent'. Feature 027 (FR6.4): points at /api/v1/profiles/{profile_id} -- the legacy /api/v1/agents/{id} route was removed; the agent payload is now the embedded `agent` sub-object of GET /api/v1/profiles/{id}"}
       }
     }
   }

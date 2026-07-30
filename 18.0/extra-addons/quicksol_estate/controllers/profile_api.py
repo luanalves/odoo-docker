@@ -339,6 +339,49 @@ class ProfileApiController(http.Controller):
                         f"Reactivated user {user_record.id} linked to profile {profile.id}"
                     )
 
+    # Fields PUT /profiles/<id> mirrors onto the linked real.estate.agent.
+    # The first five are the profile/agent shared fields synced since
+    # Feature 010; the last six are the agent-exclusive fields moved here
+    # from the removed PUT /api/v1/agents/<id> by Feature 027 (FR5.3).
+    AGENT_SYNC_FIELDS = [
+        "name",
+        "email",
+        "phone",
+        "mobile",
+        "hire_date",
+        "creci",
+        "bank_name",
+        "bank_account",
+        "bank_account_type",
+        "bank_branch",
+        "pix_key",
+    ]
+
+    def _sync_profile_update_to_agent(self, agent, body):
+        """Feature 027 (FR5.3): mirror the agent-syncable subset of a
+        PUT /profiles/<id> body onto the linked real.estate.agent.
+
+        Returns the vals actually written (empty dict when the body has
+        nothing to sync). Model constraint failures (e.g. duplicate CRECI,
+        _check_creci_format) propagate untouched so the HTTP caller can
+        roll the transaction back and map them via
+        _agent_conflict_status. Takes a plain recordset + dict, so it is
+        unit-testable without mocking odoo.http.request."""
+        agent_update_vals = {
+            field: body[field] for field in self.AGENT_SYNC_FIELDS if field in body
+        }
+        if agent_update_vals:
+            agent.write(agent_update_vals)
+        return agent_update_vals
+
+    @staticmethod
+    def _agent_conflict_status(exc):
+        """Feature 027 (FR5.4): a duplicate CRECI in the same company is a
+        409 conflict; every other ValidationError from the agent write is a
+        400. Same "já cadastrado" string check create_profile has used
+        since Feature 026. Plain-exception input -- unit-testable."""
+        return 409 if "já cadastrado" in str(exc) else 400
+
     @http.route(
         "/api/v1/profiles",
         type="http",
@@ -735,8 +778,14 @@ class ProfileApiController(http.Controller):
                         400, f"Field {field} is immutable and cannot be updated"
                     )
 
-            # Fetch profile
-            Profile = request.env["thedevkitchen.estate.profile"]
+            # Fetch profile. Feature 027: active_test=False so an
+            # already-deactivated profile is still addressable here,
+            # matching get_profile/list_profiles/reactivate_profile --
+            # without it Odoo's implicit active=True filter turned an
+            # update of an inactive profile into a misleading 404.
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
             profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
 
             if not profile:
@@ -785,38 +834,21 @@ class ProfileApiController(http.Controller):
             # Sync to agent extension if profile_type='agent' (FR3.4,
             # extended by FR5.3 to also cover creci/bank_*/pix_key)
             if is_agent_profile:
-                Agent = request.env["real.estate.agent"]
+                Agent = request.env["real.estate.agent"].with_context(active_test=False)
                 agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
                 if agent:
-                    agent_update_vals = {}
-                    for field in [
-                        "name",
-                        "email",
-                        "phone",
-                        "mobile",
-                        "hire_date",
-                        "creci",
-                        "bank_name",
-                        "bank_account",
-                        "bank_account_type",
-                        "bank_branch",
-                        "pix_key",
-                    ]:
-                        if field in body:
-                            agent_update_vals[field] = body[field]
-
+                    try:
+                        agent_update_vals = self._sync_profile_update_to_agent(
+                            agent, body
+                        )
+                    except ValidationError as e:
+                        # FR5.4: duplicate creci -- roll back both the
+                        # profile write above and this failed agent
+                        # write, map to 409 (same pattern
+                        # create_profile uses since Feature 026).
+                        request.env.cr.rollback()
+                        return error_response(self._agent_conflict_status(e), str(e))
                     if agent_update_vals:
-                        try:
-                            agent.write(agent_update_vals)
-                        except ValidationError as e:
-                            # FR5.4: duplicate creci -- roll back both the
-                            # profile write above and this failed agent
-                            # write, map to 409 (same pattern
-                            # create_profile uses since Feature 026).
-                            request.env.cr.rollback()
-                            if "já cadastrado" in str(e):
-                                return error_response(409, str(e))
-                            return error_response(400, str(e))
                         _logger.info(
                             f"Synced profile {profile.id} updates to agent {agent.id}"
                         )
@@ -865,8 +897,14 @@ class ProfileApiController(http.Controller):
             except (json.JSONDecodeError, AttributeError):
                 pass  # Optional body
 
-            # Fetch profile
-            Profile = request.env["thedevkitchen.estate.profile"]
+            # Fetch profile. Feature 027: active_test=False so an
+            # already-deactivated profile is still found here, matching
+            # get_profile/reactivate_profile. Without it Odoo's implicit
+            # active=True filter made the "already inactive -> 400" guard
+            # below unreachable (a second DELETE answered 404 instead).
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
             profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
 
             if not profile:
@@ -893,6 +931,12 @@ class ProfileApiController(http.Controller):
             )
 
         except Exception as e:
+            # FR2.7/atomicity: a swallowed exception does NOT roll back the
+            # Odoo transaction on its own -- the request would still commit
+            # whatever the cascade wrote before failing. Roll back explicitly
+            # so a partially deactivated profile/agent/user can never be
+            # committed (same pattern as create_profile/update_profile).
+            request.env.cr.rollback()
             _logger.exception(f"Error deleting profile {profile_id}")
             return error_response(500, f"Internal server error: {str(e)}")
 
@@ -953,6 +997,12 @@ class ProfileApiController(http.Controller):
             )
 
         except Exception as e:
+            # FR2.7: the reactivation cascade writes profile -> agent -> user
+            # in that order. A constraint failure partway through (e.g. core
+            # res.users._check_company firing on active=True) leaves the
+            # profile/agent already written; without this explicit rollback
+            # Odoo would still commit that partial state on the way out.
+            request.env.cr.rollback()
             _logger.exception(f"Error reactivating profile {profile_id}")
             return error_response(500, f"Internal server error: {str(e)}")
 

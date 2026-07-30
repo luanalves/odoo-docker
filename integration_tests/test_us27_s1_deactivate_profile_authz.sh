@@ -180,7 +180,59 @@ else
 fi
 
 echo ""
-echo "Step 8: Legacy route POST /api/v1/agents/<id>/deactivate no longer usable for this purpose"
+echo "Step 8: test_delete_already_inactive_profile_returns_400 -- Owner DELETEs the same profile again"
+# Final-review I-6: delete_profile now looks the profile up with
+# active_test=False, so its "Profile is already inactive" guard is
+# reachable. Before that fix Odoo's implicit active=True filter hid the
+# row and this second DELETE answered 404, making the 400 branch dead code.
+DELETE2_BODY=$(curl -s -o /tmp/us27s1_delete2.json -w "%{http_code}" -X DELETE "$API_BASE/profiles/$PROFILE_ID" \
+    -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION")
+assert_status "Owner second DELETE (already inactive)" "400" "$DELETE2_BODY"
+MSG=$(jq -r '.message // .error // empty' /tmp/us27s1_delete2.json 2>/dev/null)
+if echo "$MSG" | grep -qi "already inactive"; then
+    echo -e "${GREEN}✓ Message is the 'already inactive' guard, not a generic 404: $MSG${NC}"
+else
+    echo -e "${RED}✗ Expected 'Profile is already inactive', got: $MSG${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+rm -f /tmp/us27s1_delete2.json
+
+echo ""
+echo "Step 9: test_multitenancy_isolation_delete_profile -- Owner A DELETEs a Company B profile"
+# ADR-008 anti-enumeration: cross-company access is 404, never 403 --
+# a 403 would confirm the id exists in another tenant.
+OWNER_B_LOGIN=$(login_user "${TEST_USER_OWNER_B:-cap.owner.b@example.com}" "${TEST_PASSWORD_OWNER_B:-seed123}")
+OWNER_B_SESSION="${OWNER_B_LOGIN%%|*}"; OWNER_B_COMPANY="${OWNER_B_LOGIN##*|}"
+if [ -z "$OWNER_B_SESSION" ]; then
+    echo -e "${RED}✗ Owner B login failed -- check TEST_USER_OWNER_B/TEST_PASSWORD_OWNER_B in 18.0/.env${NC}"
+    FAILURES=$((FAILURES + 1))
+elif [ "$OWNER_B_COMPANY" = "$OWNER_COMPANY" ]; then
+    echo -e "${RED}✗ Owner B is in the same company ($OWNER_B_COMPANY) as Owner A -- cannot test isolation${NC}"
+    FAILURES=$((FAILURES + 1))
+else
+    DOC_B=$(gen_valid_cpf "$(printf '%09d' $(( (TIMESTAMP + 7) % 1000000000 )))")
+    TENANT_TYPE_ID_B=$(curl -s "$API_BASE/profile-types" -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_B_SESSION" | jq -r '.data[] | select(.code=="tenant") | .id')
+    CREATE_B=$(curl -s -X POST "$API_BASE/profiles" \
+        -H "Content-Type: application/json" -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_B_SESSION" \
+        -d "{\"name\": \"US27S1 CompanyB $TIMESTAMP\", \"company_id\": $OWNER_B_COMPANY, \"document\": \"$DOC_B\", \"email\": \"us27s1b_$TIMESTAMP@example.com\", \"birthdate\": \"1990-01-01\", \"profile_type_id\": $TENANT_TYPE_ID_B}")
+    PROFILE_B_ID=$(echo "$CREATE_B" | jq -r '.id // empty')
+    if [ -z "$PROFILE_B_ID" ]; then
+        echo -e "${RED}✗ Failed to create Company B profile: $CREATE_B${NC}"
+        FAILURES=$((FAILURES + 1))
+    else
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$API_BASE/profiles/$PROFILE_B_ID" \
+            -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_SESSION")
+        assert_status "Owner A DELETE Company B profile $PROFILE_B_ID (anti-enumeration)" "404" "$STATUS"
+        # Cleanup: Owner B deactivates its own profile (proves the 404 above
+        # was isolation, not a nonexistent id).
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$API_BASE/profiles/$PROFILE_B_ID" \
+            -H "Authorization: Bearer $BEARER_TOKEN" -H "X-Openerp-Session-Id: $OWNER_B_SESSION")
+        assert_status "Owner B DELETE own Company B profile (control)" "200" "$STATUS"
+    fi
+fi
+
+echo ""
+echo "Step 10: Legacy route POST /api/v1/agents/<id>/deactivate no longer usable for this purpose"
 echo "(covered separately by test_us27_s5_legacy_agent_routes_removed.sh once Task 9 lands)"
 
 echo ""

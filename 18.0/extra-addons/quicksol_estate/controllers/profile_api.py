@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import datetime
+from urllib.parse import urlencode
 from odoo import http
 from odoo.http import request
 from odoo.exceptions import ValidationError
@@ -672,8 +673,31 @@ class ProfileApiController(http.Controller):
                 for p in profiles
             ]
 
-            # HATEOAS pagination links (FR2.4)
-            company_ids_str = ",".join(str(cid) for cid in requested_company_ids)
+            # HATEOAS pagination links (FR2.4). PR #30 review (P1): preserve
+            # every active filter, not just company_ids -- otherwise
+            # next/prev silently dropped profile_type/document/name/active/
+            # creci_number/creci_state and paginating a filtered list could
+            # return records outside the original filter.
+            query_params = {
+                "company_ids": ",".join(str(cid) for cid in requested_company_ids)
+            }
+            if profile_type:
+                query_params["profile_type"] = profile_type
+            if document:
+                query_params["document"] = document
+            if name:
+                query_params["name"] = name
+            if is_active is not None:
+                query_params["active"] = is_active
+            if creci_number:
+                query_params["creci_number"] = creci_number
+            if creci_state:
+                query_params["creci_state"] = creci_state
+
+            def _profiles_link(link_offset):
+                params = {**query_params, "limit": limit, "offset": link_offset}
+                return f"/api/v1/profiles?{urlencode(params)}"
+
             response_data = {
                 "success": True,
                 "data": profile_list,
@@ -682,20 +706,15 @@ class ProfileApiController(http.Controller):
                 "limit": limit,
                 "offset": offset,
                 "_links": {
-                    "self": f"/api/v1/profiles?company_ids={company_ids_str}&limit={limit}&offset={offset}",
+                    "self": _profiles_link(offset),
                 },
             }
 
             # Next/prev links
             if offset + limit < total:
-                response_data["_links"][
-                    "next"
-                ] = f"/api/v1/profiles?company_ids={company_ids_str}&limit={limit}&offset={offset + limit}"
+                response_data["_links"]["next"] = _profiles_link(offset + limit)
             if offset > 0:
-                prev_offset = max(0, offset - limit)
-                response_data["_links"][
-                    "prev"
-                ] = f"/api/v1/profiles?company_ids={company_ids_str}&limit={limit}&offset={prev_offset}"
+                response_data["_links"]["prev"] = _profiles_link(max(0, offset - limit))
 
             return success_response(response_data)
 
@@ -861,6 +880,14 @@ class ProfileApiController(http.Controller):
         except json.JSONDecodeError:
             return error_response(400, "Invalid JSON body")
         except Exception as e:
+            # PR #30 review (P1): a swallowed exception does NOT roll back
+            # the Odoo transaction on its own -- without this, an
+            # unexpected failure during the profile->agent sync (e.g. an
+            # invalid Selection value slipping past validation) still
+            # committed the profile.write() that ran just before it. Same
+            # atomicity pattern already used by delete_profile/
+            # reactivate_profile.
+            request.env.cr.rollback()
             _logger.exception(f"Error updating profile {profile_id}")
             return error_response(500, f"Internal server error: {str(e)}")
 

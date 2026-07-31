@@ -7209,14 +7209,15 @@ Returns: paginated list with HATEOAS next/prev links.</field>
 **Mutable fields:** name, email, phone, mobile, occupation, birthdate, hire_date
 **Immutable fields (400 if present):** profile_type, company_id, document
 
-If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are also synced onto the linked real.estate.agent record.
+If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are also synced onto the linked real.estate.agent record. Additionally, when profile_type is 'agent', the agent-exclusive fields below are also accepted and synced (Feature 027, FR5.3): creci, bank_name, bank_account, bank_account_type ("checking" or "savings" only), bank_branch, pix_key. These agent-exclusive fields are validated (and, for any other profile_type, silently ignored) only after confirming profile_type is 'agent'.
 
 **Path Parameter:**
 - id (integer): Profile id
 
 **Error Responses:**
-- 400 Bad Request: schema validation failure, or an immutable field was included
-- 404 Not Found: profile not found, or belongs to an inaccessible company</field>
+- 400 Bad Request: schema validation failure (including an invalid bank_account_type), or an immutable field was included
+- 404 Not Found: profile not found, or belongs to an inaccessible company
+- 409 Conflict: creci already registered for another agent in the same company</field>
             <field name="request_schema"><![CDATA[
 {
   "type": "object",
@@ -7229,7 +7230,13 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
     "mobile":     {"type": "string"},
     "occupation": {"type": "string"},
     "birthdate":  {"type": "string", "format": "date"},
-    "hire_date":  {"type": "string", "format": "date"}
+    "hire_date":  {"type": "string", "format": "date"},
+    "creci":             {"type": "string", "example": "CRECI-SP 12345", "description": "Only synced when profile_type is 'agent'."},
+    "bank_name":         {"type": "string", "description": "Only synced when profile_type is 'agent'."},
+    "bank_account":      {"type": "string", "description": "Only synced when profile_type is 'agent'."},
+    "bank_account_type": {"type": "string", "enum": ["checking", "savings"], "description": "Only synced when profile_type is 'agent'."},
+    "bank_branch":       {"type": "string", "description": "Only synced when profile_type is 'agent'."},
+    "pix_key":           {"type": "string", "description": "Only synced when profile_type is 'agent'."}
   }
 }
 ]]></field>

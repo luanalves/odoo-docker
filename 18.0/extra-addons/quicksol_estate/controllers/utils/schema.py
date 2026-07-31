@@ -223,6 +223,13 @@ class SchemaValidator:
         },
         "constraints": {
             "creci": AGENT_CREATE_SCHEMA["constraints"]["creci"],
+            # PR #30 review (P1): bank_account_type is a real.estate.agent
+            # Selection field (checking/savings only, see models/agent.py).
+            # Without this constraint an invalid value passed schema
+            # validation and blew up as a raw ValueError inside
+            # agent.write() -- AFTER profile.write() had already run --
+            # instead of a clean 400 raised before any write happens.
+            "bank_account_type": lambda v: v in ("checking", "savings") if v else True,
         },
     }
 

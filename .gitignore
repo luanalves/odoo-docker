@@ -56,3 +56,4 @@ Thumbs.db
 18.0/celery_worker/
 integration_tests/cookies.txt
 .worktrees/
+.claude/worktrees/

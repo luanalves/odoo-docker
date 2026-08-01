@@ -4272,123 +4272,6 @@ Use the `location_type_id` field when creating or updating properties.
             <field name="active" eval="True"/>
         </record>
 
-        <!-- Agent Management Endpoints -->
-
-        <record id="api_endpoint_list_agents" model="thedevkitchen.api.endpoint">
-            <field name="name">List Agents</field>
-            <field name="path">/api/v1/agents</field>
-            <field name="method">GET</field>
-            <field name="module_name">quicksol_estate</field>
-            <field name="protected" eval="True"/>
-            <field name="tags">Agents</field>
-            <field name="summary">List agents from specified companies</field>
-            <field name="description">Get paginated list of agents from specified companies with filtering capabilities.
-
-**REQUIRED Query Parameter:**
-- `company_ids` (string, REQUIRED): Comma-separated list of company IDs to filter agents. 
-  The user must have access to all specified companies (multi-tenancy validation).
-  Examples: "1" for single company, "1,2,3" for multiple companies.
-
-**Optional Query Parameters:**
-- `limit`: Items per page (default: 20, max: 100)
-- `offset`: Number of items to skip (default: 0)
-- `is_active`: Filter by active status (optional):
-  - Not provided: returns ALL agents (active and inactive)
-  - "true": returns only active agents
-  - "false": returns only inactive agents
-- `creci_number`: Filter by CRECI number (partial match)
-- `creci_state`: Filter by CRECI state (e.g., "SP", "RJ")
-
-**Security:**
-- Requires JWT + Session authentication
-- Multi-tenancy: User can only access agents from companies they belong to
-- Admin users can access agents from any company
-
-**Error Responses:**
-- 400: company_ids parameter is required
-- 400: Invalid company_ids format
-- 403: Access denied to company IDs (user doesn't have access)</field>
-            <field name="response_schema"><![CDATA[
-{
-  "type": "object",
-  "title": "ListAgentsResponse",
-  "properties": {
-    "success": {"type": "boolean", "example": true},
-    "data": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id":           {"type": "integer", "example": 1},
-          "name":         {"type": "string",  "example": "Agent Name"},
-          "email":        {"type": "string",  "example": "agent@company.com"},
-          "cpf":          {"type": "string",  "example": "123.456.789-01"},
-          "creci":        {"type": "string",  "example": "CRECI-SP 12345"},
-          "company_id":   {"type": "integer", "example": 1},
-          "company_name": {"type": "string",  "example": "Company Name"},
-          "_links":       {"type": "object"}
-        }
-      }
-    },
-    "count":  {"type": "integer", "example": 10},
-    "total":  {"type": "integer", "example": 50},
-    "limit":  {"type": "integer", "example": 20},
-    "offset": {"type": "integer", "example": 0},
-    "_links": {"type": "object"}
-  }
-}
-]]></field>
-            <field name="active" eval="True"/>
-        </record>
-
-        <record id="api_endpoint_get_agent" model="thedevkitchen.api.endpoint">
-            <field name="name">Get Agent</field>
-            <field name="path">/api/v1/agents/{id}</field>
-            <field name="method">GET</field>
-            <field name="module_name">quicksol_estate</field>
-            <field name="protected" eval="True"/>
-            <field name="tags">Agents</field>
-            <field name="summary">Get agent by ID</field>
-            <field name="description">Returns detailed information about a specific agent including performance metrics.</field>
-            <field name="active" eval="True"/>
-        </record>
-
-        <record id="api_endpoint_update_agent" model="thedevkitchen.api.endpoint">
-            <field name="name">Update Agent</field>
-            <field name="path">/api/v1/agents/{id}</field>
-            <field name="method">PUT</field>
-            <field name="module_name">quicksol_estate</field>
-            <field name="protected" eval="True"/>
-            <field name="tags">Agents</field>
-            <field name="summary">Update agent</field>
-            <field name="description">Update agent information including CRECI, contact details, and commission settings.</field>
-            <field name="active" eval="True"/>
-        </record>
-
-        <record id="api_endpoint_deactivate_agent" model="thedevkitchen.api.endpoint">
-            <field name="name">Deactivate Agent</field>
-            <field name="path">/api/v1/agents/{id}/deactivate</field>
-            <field name="method">POST</field>
-            <field name="module_name">quicksol_estate</field>
-            <field name="protected" eval="True"/>
-            <field name="tags">Agents</field>
-            <field name="summary">Deactivate agent</field>
-            <field name="description">Deactivate an agent (soft delete). Agent won't appear in active lists but data is preserved.</field>
-            <field name="active" eval="True"/>
-        </record>
-
-        <record id="api_endpoint_reactivate_agent" model="thedevkitchen.api.endpoint">
-            <field name="name">Reactivate Agent</field>
-            <field name="path">/api/v1/agents/{id}/reactivate</field>
-            <field name="method">POST</field>
-            <field name="module_name">quicksol_estate</field>
-            <field name="protected" eval="True"/>
-            <field name="tags">Agents</field>
-            <field name="summary">Reactivate agent</field>
-            <field name="description">Reactivate a previously deactivated agent.</field>
-            <field name="active" eval="True"/>
-        </record>
-
         <!-- Assignment Endpoints -->
 
         <record id="api_endpoint_create_assignment" model="thedevkitchen.api.endpoint">
@@ -7268,6 +7151,8 @@ Optional query parameters:
 - document (string): filter by exact CPF/CNPJ (normalized before matching)
 - name (string): case-insensitive partial match
 - active (string): "true" or "false" (default: only active)
+- creci_number (string, Feature 027): filter agent-typed profiles by CRECI number (ilike substring match on the linked real.estate.agent record). No match -> empty list, not an error.
+- creci_state (string, Feature 027): filter agent-typed profiles by CRECI state (exact, case-insensitive match on the linked real.estate.agent record). No match -> empty list, not an error.
 - limit (integer, default 20, max 100)
 - offset (integer, default 0)
 
@@ -7324,14 +7209,15 @@ Returns: paginated list with HATEOAS next/prev links.</field>
 **Mutable fields:** name, email, phone, mobile, occupation, birthdate, hire_date
 **Immutable fields (400 if present):** profile_type, company_id, document
 
-If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are also synced onto the linked real.estate.agent record.
+If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are also synced onto the linked real.estate.agent record. Additionally, when profile_type is 'agent', the agent-exclusive fields below are also accepted and synced (Feature 027, FR5.3): creci, bank_name, bank_account, bank_account_type ("checking" or "savings" only), bank_branch, pix_key. These agent-exclusive fields are validated (and, for any other profile_type, silently ignored) only after confirming profile_type is 'agent'.
 
 **Path Parameter:**
 - id (integer): Profile id
 
 **Error Responses:**
-- 400 Bad Request: schema validation failure, or an immutable field was included
-- 404 Not Found: profile not found, or belongs to an inaccessible company</field>
+- 400 Bad Request: schema validation failure (including an invalid bank_account_type), or an immutable field was included
+- 404 Not Found: profile not found, or belongs to an inaccessible company
+- 409 Conflict: creci already registered for another agent in the same company</field>
             <field name="request_schema"><![CDATA[
 {
   "type": "object",
@@ -7344,7 +7230,13 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
     "mobile":     {"type": "string"},
     "occupation": {"type": "string"},
     "birthdate":  {"type": "string", "format": "date"},
-    "hire_date":  {"type": "string", "format": "date"}
+    "hire_date":  {"type": "string", "format": "date"},
+    "creci":             {"type": "string", "example": "CRECI-SP 12345", "description": "Only synced when profile_type is 'agent'."},
+    "bank_name":         {"type": "string", "description": "Only synced when profile_type is 'agent'."},
+    "bank_account":      {"type": "string", "description": "Only synced when profile_type is 'agent'."},
+    "bank_account_type": {"type": "string", "enum": ["checking", "savings"], "description": "Only synced when profile_type is 'agent'."},
+    "bank_branch":       {"type": "string", "description": "Only synced when profile_type is 'agent'."},
+    "pix_key":           {"type": "string", "description": "Only synced when profile_type is 'agent'."}
   }
 }
 ]]></field>
@@ -7359,7 +7251,9 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
             <field name="protected" eval="True"/>
             <field name="tags">Profiles</field>
             <field name="summary">Soft-delete (deactivate) a profile</field>
-            <field name="description">Deactivates a thedevkitchen.estate.profile record (soft delete, ADR-015 -- `active=False`, never a hard delete). Cascades to the linked real.estate.agent (if profile_type is 'agent') and to any linked res.users login, deactivating both and invalidating active sessions.
+            <field name="description">Deactivates a thedevkitchen.estate.profile record (soft delete, ADR-015 -- `active=False`, never a hard delete). Cascades to the linked real.estate.agent (if profile_type is 'agent') and to any linked res.users login, deactivating both and invalidating active sessions. Authorization: owner or system admin only, for ANY profile_type (Feature 027).
+
+**BREAKING CHANGE (Feature 027, module 18.0.7.0.0):** this endpoint previously had NO group check -- any authenticated user with access to the profile's company could deactivate any profile. It now requires `quicksol_estate.group_real_estate_owner` OR `base.group_system`. Manager and Director, who could call it before, now receive 403 (these endpoints cascade to res.users.active, and managing res.users is an Owner-only rule per ADR-019 and security/ir.model.access.csv).
 
 **Path Parameter:**
 - id (integer): Profile id
@@ -7369,6 +7263,7 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
 
 **Error Responses:**
 - 400 Bad Request: profile already inactive
+- 403 Forbidden: requester is not owner/admin (includes Manager and Director)
 - 404 Not Found: profile not found, or belongs to an inaccessible company</field>
             <field name="request_schema"><![CDATA[
 {
@@ -7380,6 +7275,26 @@ If the profile's type is 'agent', name/email/phone/mobile/hire_date changes are 
   }
 }
 ]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_reactivate_profile" model="thedevkitchen.api.endpoint">
+            <field name="name">Reactivate Profile</field>
+            <field name="path">/api/v1/profiles/{id}/reactivate</field>
+            <field name="method">POST</field>
+            <field name="module_name">quicksol_estate</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">Profiles</field>
+            <field name="summary">Reactivate a previously deactivated profile</field>
+            <field name="description">Reactivates a thedevkitchen.estate.profile record (active=True) and cascades to the linked real.estate.agent (if profile_type is 'agent') and any linked res.users login. Authorization: owner or system admin only, for ANY profile_type (Feature 027). Never restores a previously invalidated thedevkitchen.api.session -- the user must log in again.
+
+**Path Parameter:**
+- id (integer): Profile id
+
+**Error Responses:**
+- 400 Bad Request: profile already active
+- 403 Forbidden: requester is not owner/admin
+- 404 Not Found: profile not found, or belongs to an inaccessible company</field>
             <field name="active" eval="True"/>
         </record>
 

@@ -1,6 +1,6 @@
 {
     "name": "TheDevKitchen User Onboarding",
-    "version": "18.0.2.0.0",
+    "version": "18.0.2.1.0",  # Feature 027: invite `agent` link -> /api/v1/profiles/{id}
     "category": "Human Resources",
     "summary": "User Onboarding & Password Management for RBAC Profiles",
     "description": """

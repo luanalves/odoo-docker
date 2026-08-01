@@ -9,6 +9,7 @@ from . import base_agent_test
 
 # Integration tests directory (TransactionCase - WITH database)
 from . import integration
+
 # Feature 013: Property Proposals (explicit imports for Odoo test discovery)
 from .integration import test_proposal_create
 from .integration import test_proposal_send
@@ -20,8 +21,34 @@ from .integration import test_proposal_list
 from .integration import test_proposal_attachments
 from .integration import test_proposal_expiration
 from .integration import test_validation_gaps
+
 # Feature 026: characterization test for agent.create() profile/user setdefault mechanism
 from .integration import test_agent_create_from_profile_and_user
+
+# Feature 027: _serialize_profile embeds batched agent sub-object
+from .integration import test_serialize_profile_agent_subobject
+
+# Feature 027: creci_number/creci_state filters on GET /api/v1/profiles
+from .integration import test_list_profiles_creci_filters
+
+# Feature 027: PUT /api/v1/profiles/<id> syncs agent-exclusive fields
+from .integration import test_update_profile_agent_fields
+
+# Feature 027: DELETE /api/v1/profiles/<id> owner/admin-only authorization
+from .integration import test_profile_deactivate_authorization
+
+# Feature 027: POST /api/v1/profiles/<id>/reactivate cascade
+from .integration import test_profile_reactivate_cascade
+
+# Feature 027: session invalidation on deactivate across all profile_type
+from .integration import test_deactivate_session_invalidation_all_profile_types
+
+# Feature 027 (FR6.4): sale_api.py agent link points at /api/v1/profiles/{id}
+from .integration import test_sale_serializer_agent_link
+
+# Feature 027 bugfix: GET /api/v1/profiles/<id> active_test=False parity
+# with list_profiles for deactivated profiles
+from .integration import test_get_profile_active_test
 
 # Observer pattern tests
 from . import observers

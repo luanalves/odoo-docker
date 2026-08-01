@@ -7,7 +7,7 @@
 **Source directory analyzed:** `18.0/` (contains `odoo.conf`, `docker-compose.yml`, `extra-addons/`, `celery_worker/`) — workspace root = repository root (`/opt/homebrew/var/www/realestate/realestate_backend`)
 **Detected stack:** Odoo 18.0 (Community, self-built image) + Python 3.12 + PostgreSQL 16 + Redis 7 + RabbitMQ 3 + Celery 5.3.4
 
-**Prior documentation reconciled with code (Step 0.5):** `README.md` (root and `18.0/`), `docs/guide/*` (chapters 1–5), `docs/adr/*` (29 ADRs), `docs/architecture/*`, `TECHNICAL_DEBIT.md`. There is also a pre-existing, separately maintained **spec-kit constitution** at `.specify/memory/constitution.md` (v1.9.1) — a detailed, code-pattern-level governance document (Redis cache patterns, RBAC/multi-tenancy principles, forbidden patterns, etc.) used by the `.specify`/`.github/agents` speckit tooling. This `CLAUDE.md` is a separate, higher-level navigation document and does not replace or duplicate it; consult `.specify/memory/constitution.md` for binding, pattern-level engineering rules and amendment history.
+**Prior documentation reconciled with code (Step 0.5):** `README.md` (root and `18.0/`), `docs/guide/*` (chapters 1–5), `docs/adr/*` (29 ADRs), `docs/architecture/*`, `TECHNICAL_DEBIT.md`. There is also a pre-existing, separately maintained **spec-kit constitution** at `.specify/memory/constitution.md` (v1.10.0) — a detailed, code-pattern-level governance document (Redis cache patterns, RBAC/multi-tenancy principles, forbidden patterns, etc.) used by the `.specify`/`.github/agents` speckit tooling. This `CLAUDE.md` is a separate, higher-level navigation document and does not replace or duplicate it; consult `.specify/memory/constitution.md` for binding, pattern-level engineering rules and amendment history.
 
 ## Specifications (spec-kit pattern)
 
@@ -204,7 +204,7 @@ ADR-003 (current, v3.0) requires 100% coverage of validations (`required=True`, 
 - Base URLs: see §3 environments table (asserted by documentation, not independently verifiable without infra access).
 - Locale/i18n: standard Odoo i18n; no per-tenant locale sub-level found.
 - Cache/search engine in use: Redis (session/JWT/Celery); PostgreSQL ORM search (no dedicated search engine).
-- Feature flags: none found at a module/tenant level; `thedevkitchen.security.settings` model exists for security-related runtime settings (session cache TTL, etc., per `.specify/memory/constitution.md` v1.9.1).
+- Feature flags: none found at a module/tenant level; `thedevkitchen.security.settings` model exists for security-related runtime settings (session cache TTL, etc., per `.specify/memory/constitution.md` v1.10.0).
 - Per-environment performance tuning (`workers`, `max_cron_threads`, `limit_*`) is env-var driven (`ODOO_WORKERS`, etc.) — **Not identified/verifiable from this repo alone**, since production `.env` values are not committed (as expected for secrets) and `odoo.conf` itself leaves these directives commented out.
 
 ## 12. Attention Points — Documentation/Code Discrepancies (reconciled)

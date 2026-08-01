@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import datetime
+from urllib.parse import urlencode
 from odoo import http
 from odoo.http import request
 from odoo.exceptions import ValidationError
@@ -54,6 +55,21 @@ PROFILE_CREATION_MATRIX = {
 }
 
 
+# Feature 027 (FR3): DELETE /profiles/<id> and POST /profiles/<id>/reactivate
+# authorization -- deliberately narrower than PROFILE_CREATION_MATRIX above.
+# Restricted to owner/admin only, for ANY profile_type, after cross-checking
+# ADR-019 + security/groups.xml + security/ir.model.access.csv (managing
+# res.users, which both these endpoints cascade into, is Owner-only in this
+# project -- Manager/Director have no ACL on base.model_res_users at all)
+# and the invite authorization matrix already implemented in Feature 009
+# (specs/009-user-onboarding-password-management/spec.md), where Manager
+# can never act on a profile_type it isn't authorized to create.
+PROFILE_DEACTIVATE_REACTIVATE_GROUPS = [
+    "quicksol_estate.group_real_estate_owner",
+    "base.group_system",
+]
+
+
 class ProfileApiController(http.Controller):
 
     def _get_user_allowed_profile_type_ids(self, user):
@@ -76,8 +92,18 @@ class ProfileApiController(http.Controller):
         )
         return profile_types.ids
 
-    def _serialize_profile(self, profile):
-        """Serialize profile record to JSON dict with HATEOAS links"""
+    def _serialize_profile(self, profile, agent_by_profile_id=None):
+        """Serialize profile record to JSON dict with HATEOAS links.
+
+        agent_by_profile_id (dict[int, recordset] | None): when serializing
+        a paginated list, callers MUST pass a prefetched
+        {profile_id: agent_recordset} dict built via a single batched
+        search() (see list_profiles) instead of leaving this None -- that
+        avoids the N+1 query pattern that existed here since Feature
+        010/024 (one real.estate.agent.search() per row). get_profile
+        (single-record) may safely omit this and fall back to an
+        individual search(), since there's no N+1 risk for one record.
+        """
         data = {
             "id": profile.id,
             "name": profile.name,
@@ -124,22 +150,238 @@ class ProfileApiController(http.Controller):
             data["user_id"] = user.id
             data["_links"]["resend_invite"] = "/api/v1/users/resend-invite"
 
-        # Add agent extension link if profile_type='agent'
+        # Feature 027 (FR1.3/FR1.4): embed full agent sub-object for
+        # profile_type='agent', with field parity to the removed
+        # GET /api/v1/agents/{id}. Uses profile.env (not request.env) so
+        # this method has no dependency on odoo.http.request -- keeps it
+        # directly unit-testable.
         if profile.profile_type_id.code == "agent":
-            agent = (
-                request.env["real.estate.agent"]
-                .sudo()
-                .search([("profile_id", "=", profile.id)], limit=1)
-            )
+            if agent_by_profile_id is not None:
+                agent = agent_by_profile_id.get(profile.id)
+            else:
+                agent = (
+                    profile.env["real.estate.agent"]
+                    .sudo()
+                    .with_context(active_test=False)
+                    .search([("profile_id", "=", profile.id)], limit=1)
+                )
             if agent:
-                data["agent_id"] = agent.id
-                data["_links"]["agent"] = f"/api/v1/agents/{agent.id}"
+                data["agent_id"] = agent.id  # backward compat (Feature 026)
+                data["agent"] = {
+                    "id": agent.id,
+                    "creci": agent.creci,
+                    "creci_normalized": agent.creci_normalized,
+                    "creci_number": agent.creci_number,
+                    "creci_state": agent.creci_state,
+                    "bank_name": agent.bank_name,
+                    "bank_account": agent.bank_account,
+                    "bank_account_type": agent.bank_account_type,
+                    "pix_key": agent.pix_key,
+                    "active": agent.active,
+                    "deactivation_date": (
+                        agent.deactivation_date.isoformat()
+                        if agent.deactivation_date
+                        else None
+                    ),
+                    "deactivation_reason": agent.deactivation_reason,
+                    "user_id": agent.user_id.id if agent.user_id else None,
+                    "_links": {
+                        "properties": f"/api/v1/agents/{agent.id}/properties",
+                        "performance": f"/api/v1/agents/{agent.id}/performance",
+                        "commission_rules": f"/api/v1/agents/{agent.id}/commission-rules",
+                    },
+                }
+                # FR1.5/FR6.4: points at /api/v1/profiles/{id}, not the
+                # removed /api/v1/agents/{id}.
+                data["_links"]["agent"] = f"/api/v1/profiles/{profile.id}"
 
         # Add invite link if no user yet (partner_id exists but no user)
         if profile.partner_id and not profile.partner_id.user_ids:
             data["_links"]["invite"] = "/api/v1/users/invite"
 
         return data
+
+    def _resolve_profile_ids_by_agent_filters(self, env, creci_number, creci_state):
+        """Feature 027 (FR1.1/FR1.2): resolve profile_ids matching the
+        creci_number/creci_state filters via a single real.estate.agent
+        search(), for list_profiles to AND into its own domain. Takes env
+        as a plain param (not request.env) so this is unit-testable without
+        odoo.http.request.
+
+        Returns:
+            None if neither filter was provided (caller should not touch
+                the domain at all).
+            list[int] otherwise (possibly empty -- an empty list means
+                "filter applied, zero agents matched", which the caller
+                must turn into an impossible domain clause, not "no
+                filter").
+        """
+        if not creci_number and not creci_state:
+            return None
+
+        domain = []
+        if creci_number:
+            domain.append(("creci_number", "ilike", creci_number))
+        if creci_state:
+            domain.append(("creci_state", "=", creci_state.upper()))
+
+        agents = (
+            env["real.estate.agent"]
+            .sudo()
+            .with_context(active_test=False)
+            .search(domain)
+        )
+        return agents.mapped("profile_id").ids
+
+    def _user_can_deactivate_or_reactivate_profile(self, user):
+        """Feature 027 (FR3.1): explicit check of both authorized groups --
+        never rely on has_group('...manager') alone to also cover Owner,
+        since group_real_estate_owner does not imply
+        group_real_estate_manager in this project's security/groups.xml
+        (the bug class present in the legacy agent_api.py deactivate/
+        reactivate_agent). Takes user as a plain recordset, not request, so
+        it's unit-testable without mocking odoo.http.request."""
+        return any(
+            user.has_group(group_xml_id)
+            for group_xml_id in PROFILE_DEACTIVATE_REACTIVATE_GROUPS
+        )
+
+    def _deactivate_profile_cascade(self, profile, reason=None):
+        """Feature 027: extracted from delete_profile so the cascade logic
+        (profile -> agent -> user -> session) is callable without an HTTP
+        request, for direct unit testing (Task 7). Uses profile.env, not
+        request.env -- the recordset already carries the right env/cr."""
+        env = profile.env
+        profile.write(
+            {
+                "active": False,
+                "deactivation_date": datetime.now(),
+                "deactivation_reason": reason or "Deactivated via API",
+            }
+        )
+
+        if profile.profile_type_id.code == "agent":
+            Agent = env["real.estate.agent"]
+            agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
+            if agent and agent.active:
+                agent.write(
+                    {
+                        "active": False,
+                        "deactivation_date": datetime.now(),
+                        "deactivation_reason": reason or "Profile deactivated",
+                    }
+                )
+                _logger.info(f"Cascaded deactivation to agent {agent.id}")
+
+        if profile.partner_id:
+            User = env["res.users"]
+            users = User.sudo().search([("partner_id", "=", profile.partner_id.id)])
+            for user_record in users:
+                if user_record.active:
+                    user_record.write({"active": False})
+                    _logger.info(
+                        f"Deactivated user {user_record.id} linked to profile {profile.id}"
+                    )
+                    try:
+                        APISession = env["thedevkitchen.api.session"]
+                        active_sessions = APISession.sudo().search(
+                            [
+                                ("user_id", "=", user_record.id),
+                                ("is_active", "=", True),
+                            ]
+                        )
+                        if active_sessions:
+                            active_sessions.write({"is_active": False})
+                            _logger.info(
+                                "[CACHE] invalidated %d session(s) for user %d",
+                                len(active_sessions),
+                                user_record.id,
+                            )
+                    except Exception as exc:
+                        _logger.warning(
+                            "[CACHE] session invalidation during profile delete failed: %s",
+                            exc,
+                        )
+
+    def _reactivate_profile_cascade(self, profile):
+        """Feature 027 (FR2): inverse of _deactivate_profile_cascade.
+        Deliberately never touches thedevkitchen.api.session -- a
+        previously invalidated session (Feature 023's proactive
+        invalidation) is never restored; the user must authenticate again."""
+        env = profile.env
+        profile.write(
+            {
+                "active": True,
+                "deactivation_date": False,
+                "deactivation_reason": False,
+            }
+        )
+
+        if profile.profile_type_id.code == "agent":
+            Agent = env["real.estate.agent"].with_context(active_test=False)
+            agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
+            if agent and not agent.active:
+                agent.write(
+                    {
+                        "active": True,
+                        "deactivation_date": False,
+                        "deactivation_reason": False,
+                    }
+                )
+                _logger.info(f"Cascaded reactivation to agent {agent.id}")
+
+        if profile.partner_id:
+            User = env["res.users"].with_context(active_test=False)
+            users = User.sudo().search([("partner_id", "=", profile.partner_id.id)])
+            for user_record in users:
+                if not user_record.active:
+                    user_record.write({"active": True})
+                    _logger.info(
+                        f"Reactivated user {user_record.id} linked to profile {profile.id}"
+                    )
+
+    # Fields PUT /profiles/<id> mirrors onto the linked real.estate.agent.
+    # The first five are the profile/agent shared fields synced since
+    # Feature 010; the last six are the agent-exclusive fields moved here
+    # from the removed PUT /api/v1/agents/<id> by Feature 027 (FR5.3).
+    AGENT_SYNC_FIELDS = [
+        "name",
+        "email",
+        "phone",
+        "mobile",
+        "hire_date",
+        "creci",
+        "bank_name",
+        "bank_account",
+        "bank_account_type",
+        "bank_branch",
+        "pix_key",
+    ]
+
+    def _sync_profile_update_to_agent(self, agent, body):
+        """Feature 027 (FR5.3): mirror the agent-syncable subset of a
+        PUT /profiles/<id> body onto the linked real.estate.agent.
+
+        Returns the vals actually written (empty dict when the body has
+        nothing to sync). Model constraint failures (e.g. duplicate CRECI,
+        _check_creci_format) propagate untouched so the HTTP caller can
+        roll the transaction back and map them via
+        _agent_conflict_status. Takes a plain recordset + dict, so it is
+        unit-testable without mocking odoo.http.request."""
+        agent_update_vals = {
+            field: body[field] for field in self.AGENT_SYNC_FIELDS if field in body
+        }
+        if agent_update_vals:
+            agent.write(agent_update_vals)
+        return agent_update_vals
+
+    @staticmethod
+    def _agent_conflict_status(exc):
+        """Feature 027 (FR5.4): a duplicate CRECI in the same company is a
+        409 conflict; every other ValidationError from the agent write is a
+        400. Same "já cadastrado" string check create_profile has used
+        since Feature 026. Plain-exception input -- unit-testable."""
+        return 409 if "já cadastrado" in str(exc) else 400
 
     @http.route(
         "/api/v1/profiles",
@@ -388,6 +630,16 @@ class ProfileApiController(http.Controller):
                 elif is_active.lower() == "false":
                     domain.append(("active", "=", False))
 
+            # Feature 027 (FR1.1/FR1.2): creci_number/creci_state filters,
+            # equivalent to the removed GET /api/v1/agents?creci_number=...
+            creci_number = kwargs.get("creci_number")
+            creci_state = kwargs.get("creci_state")
+            agent_profile_ids = self._resolve_profile_ids_by_agent_filters(
+                request.env, creci_number, creci_state
+            )
+            if agent_profile_ids is not None:
+                domain.append(("id", "in", agent_profile_ids or [0]))
+
             # Pagination
             limit = min(int(kwargs.get("limit", 20)), 100)
             offset = int(kwargs.get("offset", 0))
@@ -401,11 +653,51 @@ class ProfileApiController(http.Controller):
                 .search(domain, limit=limit, offset=offset, order="name asc")
             )
 
-            # Serialize profiles
-            profile_list = [self._serialize_profile(p) for p in profiles]
+            # Feature 027 (FR1.4): resolve all agent sub-objects for this
+            # page in ONE query instead of one search() per row -- fixes
+            # the N+1 pattern that existed here since Feature 010/024.
+            agent_profile_ids = [
+                p.id for p in profiles if p.profile_type_id.code == "agent"
+            ]
+            agents = (
+                request.env["real.estate.agent"]
+                .sudo()
+                .with_context(active_test=False)
+                .search([("profile_id", "in", agent_profile_ids)])
+            )
+            agent_by_profile_id = {a.profile_id.id: a for a in agents}
 
-            # HATEOAS pagination links (FR2.4)
-            company_ids_str = ",".join(str(cid) for cid in requested_company_ids)
+            # Serialize profiles
+            profile_list = [
+                self._serialize_profile(p, agent_by_profile_id=agent_by_profile_id)
+                for p in profiles
+            ]
+
+            # HATEOAS pagination links (FR2.4). PR #30 review (P1): preserve
+            # every active filter, not just company_ids -- otherwise
+            # next/prev silently dropped profile_type/document/name/active/
+            # creci_number/creci_state and paginating a filtered list could
+            # return records outside the original filter.
+            query_params = {
+                "company_ids": ",".join(str(cid) for cid in requested_company_ids)
+            }
+            if profile_type:
+                query_params["profile_type"] = profile_type
+            if document:
+                query_params["document"] = document
+            if name:
+                query_params["name"] = name
+            if is_active is not None:
+                query_params["active"] = is_active
+            if creci_number:
+                query_params["creci_number"] = creci_number
+            if creci_state:
+                query_params["creci_state"] = creci_state
+
+            def _profiles_link(link_offset):
+                params = {**query_params, "limit": limit, "offset": link_offset}
+                return f"/api/v1/profiles?{urlencode(params)}"
+
             response_data = {
                 "success": True,
                 "data": profile_list,
@@ -414,20 +706,15 @@ class ProfileApiController(http.Controller):
                 "limit": limit,
                 "offset": offset,
                 "_links": {
-                    "self": f"/api/v1/profiles?company_ids={company_ids_str}&limit={limit}&offset={offset}",
+                    "self": _profiles_link(offset),
                 },
             }
 
             # Next/prev links
             if offset + limit < total:
-                response_data["_links"][
-                    "next"
-                ] = f"/api/v1/profiles?company_ids={company_ids_str}&limit={limit}&offset={offset + limit}"
+                response_data["_links"]["next"] = _profiles_link(offset + limit)
             if offset > 0:
-                prev_offset = max(0, offset - limit)
-                response_data["_links"][
-                    "prev"
-                ] = f"/api/v1/profiles?company_ids={company_ids_str}&limit={limit}&offset={prev_offset}"
+                response_data["_links"]["prev"] = _profiles_link(max(0, offset - limit))
 
             return success_response(response_data)
 
@@ -452,7 +739,9 @@ class ProfileApiController(http.Controller):
 
         try:
 
-            Profile = request.env["thedevkitchen.estate.profile"]
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
             profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
 
             if not profile:
@@ -508,8 +797,14 @@ class ProfileApiController(http.Controller):
                         400, f"Field {field} is immutable and cannot be updated"
                     )
 
-            # Fetch profile
-            Profile = request.env["thedevkitchen.estate.profile"]
+            # Fetch profile. Feature 027: active_test=False so an
+            # already-deactivated profile is still addressable here,
+            # matching get_profile/list_profiles/reactivate_profile --
+            # without it Odoo's implicit active=True filter turned an
+            # update of an inactive profile into a misleading 404.
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
             profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
 
             if not profile:
@@ -521,6 +816,20 @@ class ProfileApiController(http.Controller):
                 and profile.company_id.id not in request.user_company_ids
             ):
                 return error_response(404, "Profile not found")
+
+            # Feature 027 (FR5.2): agent-exclusive fields are only
+            # validated when profile_type resolves to 'agent' -- same
+            # conditional-validation pattern PROFILE_AGENT_FIELDS_SCHEMA
+            # already uses for create_profile since Feature 026.
+            is_agent_profile = profile.profile_type_id.code == "agent"
+            if is_agent_profile:
+                is_valid, agent_field_errors = (
+                    SchemaValidator.validate_profile_agent_update_fields(body)
+                )
+                if not is_valid:
+                    return error_response(
+                        400, f"Validation error: {agent_field_errors}"
+                    )
 
             # Build update vals
             update_vals = {"updated_at": datetime.now()}
@@ -541,25 +850,24 @@ class ProfileApiController(http.Controller):
             # Update profile
             profile.write(update_vals)
 
-            # Sync to agent extension if profile_type='agent' (FR3.4)
-            if profile.profile_type_id.code == "agent":
-                Agent = request.env["real.estate.agent"]
+            # Sync to agent extension if profile_type='agent' (FR3.4,
+            # extended by FR5.3 to also cover creci/bank_*/pix_key)
+            if is_agent_profile:
+                Agent = request.env["real.estate.agent"].with_context(active_test=False)
                 agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
                 if agent:
-                    agent_update_vals = {}
-                    if "name" in body:
-                        agent_update_vals["name"] = body["name"]
-                    if "email" in body:
-                        agent_update_vals["email"] = body["email"]
-                    if "phone" in body:
-                        agent_update_vals["phone"] = body["phone"]
-                    if "mobile" in body:
-                        agent_update_vals["mobile"] = body["mobile"]
-                    if "hire_date" in body:
-                        agent_update_vals["hire_date"] = body["hire_date"]
-
+                    try:
+                        agent_update_vals = self._sync_profile_update_to_agent(
+                            agent, body
+                        )
+                    except ValidationError as e:
+                        # FR5.4: duplicate creci -- roll back both the
+                        # profile write above and this failed agent
+                        # write, map to 409 (same pattern
+                        # create_profile uses since Feature 026).
+                        request.env.cr.rollback()
+                        return error_response(self._agent_conflict_status(e), str(e))
                     if agent_update_vals:
-                        agent.write(agent_update_vals)
                         _logger.info(
                             f"Synced profile {profile.id} updates to agent {agent.id}"
                         )
@@ -572,6 +880,14 @@ class ProfileApiController(http.Controller):
         except json.JSONDecodeError:
             return error_response(400, "Invalid JSON body")
         except Exception as e:
+            # PR #30 review (P1): a swallowed exception does NOT roll back
+            # the Odoo transaction on its own -- without this, an
+            # unexpected failure during the profile->agent sync (e.g. an
+            # invalid Selection value slipping past validation) still
+            # committed the profile.write() that ran just before it. Same
+            # atomicity pattern already used by delete_profile/
+            # reactivate_profile.
+            request.env.cr.rollback()
             _logger.exception(f"Error updating profile {profile_id}")
             return error_response(500, f"Internal server error: {str(e)}")
 
@@ -590,6 +906,16 @@ class ProfileApiController(http.Controller):
 
         try:
 
+            user = request.env.user
+
+            # Feature 027 (FR3): owner/admin only, for ANY profile_type --
+            # breaking change, see spec-idea.md for the full justification.
+            if not self._user_can_deactivate_or_reactivate_profile(user):
+                return error_response(
+                    403,
+                    "Only the company owner or a system admin can deactivate profiles",
+                )
+
             # Parse optional body for deactivation_reason
             deactivation_reason = None
             try:
@@ -598,8 +924,14 @@ class ProfileApiController(http.Controller):
             except (json.JSONDecodeError, AttributeError):
                 pass  # Optional body
 
-            # Fetch profile
-            Profile = request.env["thedevkitchen.estate.profile"]
+            # Fetch profile. Feature 027: active_test=False so an
+            # already-deactivated profile is still found here, matching
+            # get_profile/reactivate_profile. Without it Odoo's implicit
+            # active=True filter made the "already inactive -> 400" guard
+            # below unreachable (a second DELETE answered 404 instead).
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
             profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
 
             if not profile:
@@ -616,62 +948,7 @@ class ProfileApiController(http.Controller):
             if not profile.active:
                 return error_response(400, "Profile is already inactive")
 
-            # Soft delete profile
-            profile.write(
-                {
-                    "active": False,
-                    "deactivation_date": datetime.now(),
-                    "deactivation_reason": deactivation_reason or "Deactivated via API",
-                }
-            )
-
-            # Cascade to agent extension if profile_type='agent' (FR4.2)
-            if profile.profile_type_id.code == "agent":
-                Agent = request.env["real.estate.agent"]
-                agent = Agent.sudo().search([("profile_id", "=", profile.id)], limit=1)
-                if agent and agent.active:
-                    agent.write(
-                        {
-                            "active": False,
-                            "deactivation_date": datetime.now(),
-                            "deactivation_reason": deactivation_reason
-                            or "Profile deactivated",
-                        }
-                    )
-                    _logger.info(f"Cascaded deactivation to agent {agent.id}")
-
-            # Cascade to linked res.users (FR4.2)
-            if profile.partner_id:
-                User = request.env["res.users"]
-                users = User.sudo().search([("partner_id", "=", profile.partner_id.id)])
-                for user_record in users:
-                    if user_record.active:
-                        user_record.write({"active": False})
-                        _logger.info(
-                            f"Deactivated user {user_record.id} linked to profile {profile.id}"
-                        )
-                        # Proactive session invalidation (T017: US2)
-                        # APISession.write({'is_active': False}) triggers the Redis override
-                        try:
-                            APISession = request.env["thedevkitchen.api.session"]
-                            active_sessions = APISession.sudo().search(
-                                [
-                                    ("user_id", "=", user_record.id),
-                                    ("is_active", "=", True),
-                                ]
-                            )
-                            if active_sessions:
-                                active_sessions.write({"is_active": False})
-                                _logger.info(
-                                    "[CACHE] invalidated %d session(s) for user %d",
-                                    len(active_sessions),
-                                    user_record.id,
-                                )
-                        except Exception as exc:
-                            _logger.warning(
-                                "[CACHE] session invalidation during profile delete failed: %s",
-                                exc,
-                            )
+            self._deactivate_profile_cascade(profile, reason=deactivation_reason)
 
             return success_response(
                 {
@@ -681,7 +958,79 @@ class ProfileApiController(http.Controller):
             )
 
         except Exception as e:
+            # FR2.7/atomicity: a swallowed exception does NOT roll back the
+            # Odoo transaction on its own -- the request would still commit
+            # whatever the cascade wrote before failing. Roll back explicitly
+            # so a partially deactivated profile/agent/user can never be
+            # committed (same pattern as create_profile/update_profile).
+            request.env.cr.rollback()
             _logger.exception(f"Error deleting profile {profile_id}")
+            return error_response(500, f"Internal server error: {str(e)}")
+
+    @http.route(
+        "/api/v1/profiles/<int:profile_id>/reactivate",
+        type="http",
+        auth="none",
+        methods=["POST"],
+        csrf=False,
+        cors="*",
+    )
+    @require_jwt
+    @require_session
+    @require_company
+    def reactivate_profile(self, profile_id, **kwargs):
+
+        try:
+
+            user = request.env.user
+
+            # Feature 027 (FR2.2/FR3): same owner/admin-only matrix as
+            # DELETE /profiles/<id>.
+            if not self._user_can_deactivate_or_reactivate_profile(user):
+                return error_response(
+                    403,
+                    "Only the company owner or a system admin can reactivate profiles",
+                )
+
+            Profile = request.env["thedevkitchen.estate.profile"].with_context(
+                active_test=False
+            )
+            profile = Profile.sudo().search([("id", "=", profile_id)], limit=1)
+
+            if not profile:
+                return error_response(404, "Profile not found")
+
+            # Company isolation check (anti-enumeration, ADR-008)
+            if (
+                request.user_company_ids
+                and profile.company_id.id not in request.user_company_ids
+            ):
+                return error_response(404, "Profile not found")
+
+            if profile.active:
+                return error_response(400, "Profile is already active")
+
+            self._reactivate_profile_cascade(profile)
+
+            response_data = self._serialize_profile(profile)
+            response_data["_links"]["deactivate"] = f"/api/v1/profiles/{profile.id}"
+
+            return success_response(
+                {
+                    "success": True,
+                    "message": "Profile reactivated successfully",
+                    "data": response_data,
+                }
+            )
+
+        except Exception as e:
+            # FR2.7: the reactivation cascade writes profile -> agent -> user
+            # in that order. A constraint failure partway through (e.g. core
+            # res.users._check_company firing on active=True) leaves the
+            # profile/agent already written; without this explicit rollback
+            # Odoo would still commit that partial state on the way out.
+            request.env.cr.rollback()
+            _logger.exception(f"Error reactivating profile {profile_id}")
             return error_response(500, f"Internal server error: {str(e)}")
 
     @http.route(

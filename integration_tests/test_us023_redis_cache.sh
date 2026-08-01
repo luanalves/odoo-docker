@@ -17,6 +17,7 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8069}"
 OWNER_TOKEN="${OWNER_TOKEN:-}"
 OWNER_SESSION="${OWNER_SESSION:-}"
+OWNER_COMPANY="${OWNER_COMPANY:-}"
 REDIS_CONTAINER="${REDIS_CONTAINER:-redis}"
 REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,8 +85,27 @@ bootstrap_owner_auth() {
     fi
 
     OWNER_SESSION="$session_id"
-    export OWNER_TOKEN OWNER_SESSION
+    OWNER_COMPANY=$(echo "$login_response" | jq -r '.user.default_company_id // empty')
+    export OWNER_TOKEN OWNER_SESSION OWNER_COMPANY
     return 0
+}
+
+discover_agent_id() {
+    # Feature 027 (Task 9) removed GET /api/v1/agents. Agents are now
+    # discovered through the unified profile endpoint, reading the id from
+    # the embedded `agent` sub-object added by Task 2 -- NOT `.data[0].id`,
+    # which is the profile id, not the real.estate.agent id the
+    # /api/v1/agents/<id>/performance sub-resource is keyed on.
+    local profiles_json
+    profiles_json=$(curl -s \
+        -H "Authorization: Bearer $OWNER_TOKEN" \
+        -H "X-Openerp-Session-Id: $OWNER_SESSION" \
+        "$BASE_URL/api/v1/profiles?company_ids=$OWNER_COMPANY&profile_type=agent&active=true" \
+        2>/dev/null || echo '{}')
+
+    echo "$profiles_json" \
+        | jq -r '[.data[]? | select(.agent.active == true) | .agent.id][0] // empty' \
+        2>/dev/null || echo ""
 }
 
 _redis_cmd() {
@@ -389,18 +409,13 @@ test_s07_performance_cache_populated() {
     local before
     before=$(key_count "performance:agent:*")
 
-    # Get first available agent ID
-    local agents_json
-    agents_json=$(curl -s \
-        -H "Authorization: Bearer $OWNER_TOKEN" \
-        -H "X-Openerp-Session-Id: $OWNER_SESSION" \
-        "$BASE_URL/api/v1/agents" 2>/dev/null || echo '{}')
-
+    # Get first available agent ID (via GET /api/v1/profiles, see
+    # discover_agent_id -- GET /api/v1/agents was removed by Feature 027)
     local agent_id
-    agent_id=$(echo "$agents_json" | jq -r '.data[0].id // empty' 2>/dev/null || echo "")
+    agent_id=$(discover_agent_id)
 
     if [ -z "$agent_id" ]; then
-        log_skip "S07: No agents found — skipping"
+        log_fail "S07: No agent found via GET /api/v1/profiles?profile_type=agent"
         return
     fi
 
@@ -427,18 +442,13 @@ test_s07_performance_cache_populated() {
 test_s08_commission_create_invalidates_performance_cache() {
     log_section "S08: CommissionTransaction create invalidates performance cache"
 
-    # Warm up cache
-    local agents_json
-    agents_json=$(curl -s \
-        -H "Authorization: Bearer $OWNER_TOKEN" \
-        -H "X-Openerp-Session-Id: $OWNER_SESSION" \
-        "$BASE_URL/api/v1/agents" 2>/dev/null || echo '{}')
-
+    # Warm up cache (agent discovered via GET /api/v1/profiles, see
+    # discover_agent_id -- GET /api/v1/agents was removed by Feature 027)
     local agent_id
-    agent_id=$(echo "$agents_json" | jq -r '.data[0].id // empty' 2>/dev/null || echo "")
+    agent_id=$(discover_agent_id)
 
     if [ -z "$agent_id" ]; then
-        log_skip "S08: No agents found — skipping"
+        log_fail "S08: No agent found via GET /api/v1/profiles?profile_type=agent"
         return
     fi
 

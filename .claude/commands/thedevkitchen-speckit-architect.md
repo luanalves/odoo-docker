@@ -1,4 +1,4 @@
-Invoke the `thedevkitchen-speckit-specify` subagent to generate a new feature specification (`specs/NNN-feature-name/spec-idea.md`), following this project's spec-kit convention (numbered `specs/NNN-feature-name/` directories, NNN = next sequential number), the project's ADRs, knowledge base, and multi-tenancy/security standards — including an explicit performance analysis (indexing, N+1 risk, caching, async offload).
+Invoke the `thedevkitchen-speckit-architect` subagent to generate a new feature specification (`specs/NNN-feature-name/spec-idea.md`), following this project's spec-kit convention (numbered `specs/NNN-feature-name/` directories, NNN = next sequential number), the project's ADRs, knowledge base, and multi-tenancy/security standards — including an explicit performance analysis (indexing, N+1 risk, caching, async offload).
 
 This spec is meant to run **before** `superpowers:brainstorming`/`superpowers:writing-plans`, not after — its output is the grounded context those skills use once the spec is approved. Don't brainstorm the approach first; run this command to establish requirements, then brainstorm/plan only if an open design question remains.
 

@@ -1,5 +1,5 @@
 ---
-name: thedevkitchen-speckit-specify
+name: thedevkitchen-speckit-architect
 description: "Usar quando: criar uma nova especificação de feature, escrever uma spec para uma nova funcionalidade, iniciar o desenvolvimento orientado por spec-kit no diretório `specs/` deste projeto — executar isso ANTES de superpowers:brainstorming/superpowers:writing-plans, para que esses skills tenham um contexto concreto para trabalhar. Gatilhos: 'create spec', 'new feature spec', 'write specification', 'especificar feature', 'nova spec', 'gerar especificação'. Gera especificações de feature abrangentes e compatíveis com as ADRs para o Real Estate Management System (Odoo 18.0), integrando as ADRs do projeto, os padrões da knowledge_base, os requisitos de multi-tenancy/segurança e uma análise explícita de performance (indexação, N+1, cache, offload assíncrono). Produz `specs/NNN-feature-name/spec-idea.md`, com NNN sendo o próximo número sequencial em `specs/`. OBSERVAÇÃO: para a constituição de alto nível do projeto, use thedevkitchen-speckit-project-constitution; para documentação profunda de módulos/infra, use thedevkitchen-speckit-project-knowledge-base."
 tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite, AskUserQuestion
 ---

@@ -45,7 +45,7 @@ General Odoo 18/19 coding standards (not project-specific business logic): modul
 
 ## Specifications (spec-kit pattern)
 
-Feature work in this project follows a spec-kit convention: numbered `specs/NNN-feature-name/` directories at the workspace root, one per feature (see `specs/` for existing examples). The `thedevkitchen-speckit-specify` agent generates `specs/NNN-feature-name/spec-idea.md`; this runs **before** `superpowers:brainstorming`/`superpowers:writing-plans`, not after, so those skills have grounded requirements to work from.
+Feature work in this project follows a spec-kit convention: numbered `specs/NNN-feature-name/` directories at the workspace root, one per feature (see `specs/` for existing examples). The `thedevkitchen-speckit-architect` agent generates `specs/NNN-feature-name/spec-idea.md`; this runs **before** `superpowers:brainstorming`/`superpowers:writing-plans`, not after, so those skills have grounded requirements to work from.
 
 **Plan location override:** `superpowers:writing-plans`'s default save location is `docs/superpowers/plans/YYYY-MM-DD-<feature-name>.md`. For this project, use `specs/NNN-feature-name/plan-idea.md` instead — the same numbered directory as the corresponding `spec-idea.md` — so the spec and its implementation plan live together. This is a "user preference" per that skill's own override clause, not a change to the skill file itself.
 

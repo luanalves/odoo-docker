@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 from odoo.addons.thedevkitchen_cms.controllers.cms_template_generic_controller import (
     GENERIC_TEMPLATE_MANAGEMENT_ROLES,
     _serialize_generic_template,
+    _clamp_pagination_params,
 )
 
 
@@ -29,6 +30,64 @@ class TestGenericTemplateManagementRoles(unittest.TestCase):
 
     def test_tenant_role_not_authorized(self):
         self.assertNotIn("tenant", GENERIC_TEMPLATE_MANAGEMENT_ROLES)
+
+
+class TestClampPaginationParams(unittest.TestCase):
+    """Unit tests for pagination parameter validation.
+
+    Validates the fix for the review finding: limit=0 must be rejected
+    to prevent Odoo's ORM from omitting the SQL LIMIT clause entirely.
+    """
+
+    def test_limit_zero_raises_error(self):
+        """limit=0 must raise ValueError, not be silently passed to ORM."""
+        with self.assertRaises(ValueError) as cm:
+            _clamp_pagination_params(limit=0, offset=0)
+        self.assertIn("limit must be positive", str(cm.exception))
+
+    def test_negative_limit_raises_error(self):
+        """Negative limit must raise ValueError."""
+        with self.assertRaises(ValueError) as cm:
+            _clamp_pagination_params(limit=-5, offset=0)
+        self.assertIn("limit must be positive", str(cm.exception))
+
+    def test_negative_offset_raises_error(self):
+        """Negative offset must raise ValueError."""
+        with self.assertRaises(ValueError) as cm:
+            _clamp_pagination_params(limit=10, offset=-1)
+        self.assertIn("offset must be non-negative", str(cm.exception))
+
+    def test_valid_limit_within_range(self):
+        """limit=25 (within range) must pass through unchanged."""
+        clamped_limit, clamped_offset = _clamp_pagination_params(limit=25, offset=0)
+        self.assertEqual(clamped_limit, 25)
+        self.assertEqual(clamped_offset, 0)
+
+    def test_limit_one_is_minimum_valid(self):
+        """limit=1 must be accepted (the minimum sane limit)."""
+        clamped_limit, clamped_offset = _clamp_pagination_params(limit=1, offset=0)
+        self.assertEqual(clamped_limit, 1)
+
+    def test_limit_at_hard_cap(self):
+        """limit=50 (at hard cap) must pass through unchanged."""
+        clamped_limit, clamped_offset = _clamp_pagination_params(limit=50, offset=0)
+        self.assertEqual(clamped_limit, 50)
+
+    def test_limit_exceeding_hard_cap_is_clamped(self):
+        """limit=999 must be clamped to 50."""
+        clamped_limit, clamped_offset = _clamp_pagination_params(limit=999, offset=0)
+        self.assertEqual(clamped_limit, 50)
+
+    def test_large_offset_is_allowed(self):
+        """offset=10000 must be allowed (pagination can go deep)."""
+        clamped_limit, clamped_offset = _clamp_pagination_params(limit=10, offset=10000)
+        self.assertEqual(clamped_limit, 10)
+        self.assertEqual(clamped_offset, 10000)
+
+    def test_offset_zero_is_allowed(self):
+        """offset=0 must be allowed."""
+        clamped_limit, clamped_offset = _clamp_pagination_params(limit=10, offset=0)
+        self.assertEqual(clamped_offset, 0)
 
 
 class TestSerializeGenericTemplate(unittest.TestCase):

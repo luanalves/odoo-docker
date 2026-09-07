@@ -21,6 +21,32 @@ _GENERIC_TEMPLATE_LIST_LIMIT = 50
 GENERIC_TEMPLATE_MANAGEMENT_ROLES = ("owner", "director", "manager")
 
 
+def _clamp_pagination_params(limit, offset):
+    """Validate and clamp pagination parameters.
+
+    Args:
+        limit: Requested limit (must be >= 1)
+        offset: Requested offset (must be >= 0)
+
+    Returns:
+        tuple: (clamped_limit, clamped_offset)
+
+    Raises:
+        ValueError: if limit <= 0 or offset < 0
+
+    Constraint: limit is floored at 1 and capped at _GENERIC_TEMPLATE_LIST_LIMIT.
+    This prevents Odoo's ORM from treating limit=0 as "no limit" (which would
+    omit the SQL LIMIT clause and return all rows).
+    """
+    if limit <= 0:
+        raise ValueError(f"limit must be positive, got {limit}")
+    if offset < 0:
+        raise ValueError(f"offset must be non-negative, got {offset}")
+
+    clamped_limit = min(limit, _GENERIC_TEMPLATE_LIST_LIMIT)
+    return clamped_limit, offset
+
+
 def _serialize_generic_template(template, include_content=False):
     data = {
         "id": template.id,
@@ -57,10 +83,8 @@ class CmsTemplateGenericController(http.Controller):
 
         try:
             offset = int(request.httprequest.args.get("offset", 0))
-            limit = min(
-                int(request.httprequest.args.get("limit", _GENERIC_TEMPLATE_LIST_LIMIT)),
-                _GENERIC_TEMPLATE_LIST_LIMIT,
-            )
+            limit = int(request.httprequest.args.get("limit", _GENERIC_TEMPLATE_LIST_LIMIT))
+            limit, offset = _clamp_pagination_params(limit, offset)
         except (ValueError, TypeError):
             return _cms_error(400, "validation_error", "Invalid pagination parameters")
 

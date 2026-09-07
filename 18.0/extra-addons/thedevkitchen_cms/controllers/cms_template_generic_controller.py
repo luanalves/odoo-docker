@@ -11,14 +11,16 @@ from odoo.addons.thedevkitchen_apigateway.middleware import (
     require_company,
 )
 from ..services.cms_error_helpers import _cms_error
+from .cms_template_controller import TEMPLATE_MANAGEMENT_ROLES
 
 _logger = logging.getLogger(__name__)
 
 _GENERIC_TEMPLATE_LIST_LIMIT = 50
 
-# Same literal tuple as cms_template_controller.py — reused, never redigitized,
-# to avoid authorization drift between sibling controllers (ADR-019).
-GENERIC_TEMPLATE_MANAGEMENT_ROLES = ("owner", "director", "manager")
+# Genuine alias of cms_template_controller.TEMPLATE_MANAGEMENT_ROLES — imported,
+# never redigitized, to avoid authorization drift between sibling controllers
+# (ADR-019). Kept under this name since other code/tests already reference it.
+GENERIC_TEMPLATE_MANAGEMENT_ROLES = TEMPLATE_MANAGEMENT_ROLES
 
 _COPY_NAME_MAX_ATTEMPTS = 100
 

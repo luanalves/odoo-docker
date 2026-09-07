@@ -16,6 +16,8 @@ _logger = logging.getLogger(__name__)
 
 _TEMPLATE_LIST_LIMIT = 50
 
+TEMPLATE_MANAGEMENT_ROLES = ("owner", "director", "manager")
+
 
 def _serialize_template(template, include_content=False):
     data = {
@@ -24,6 +26,9 @@ def _serialize_template(template, include_content=False):
         "category": template.category,
         "active": template.active,
         "company_id": template.company_id.id,
+        "source_generic_template_id": (
+            template.source_generic_template_id.id if template.source_generic_template_id else None
+        ),
         "created_at": template.create_date.isoformat() if template.create_date else None,
         "updated_at": template.write_date.isoformat() if template.write_date else None,
     }
@@ -56,7 +61,7 @@ class CmsTemplateController(http.Controller):
         company_id = request.env.company.id
         role = resolve_role(request.env.user) or ""
 
-        if role not in ("owner", "director", "manager"):
+        if role not in TEMPLATE_MANAGEMENT_ROLES:
             return _cms_error(403, "forbidden", "Insufficient permissions")
 
         content = data.pop("content", None)
@@ -98,7 +103,7 @@ class CmsTemplateController(http.Controller):
         company_id = request.env.company.id
         role = resolve_role(request.env.user) or ""
 
-        if role not in ("owner", "director", "manager"):
+        if role not in TEMPLATE_MANAGEMENT_ROLES:
             return _cms_error(403, "forbidden", "Insufficient permissions to list templates")
 
         try:
@@ -137,7 +142,7 @@ class CmsTemplateController(http.Controller):
         company_id = request.env.company.id
         role = resolve_role(request.env.user) or ""
 
-        if role not in ("owner", "director", "manager"):
+        if role not in TEMPLATE_MANAGEMENT_ROLES:
             return _cms_error(403, "forbidden", "Insufficient permissions")
 
         template = request.env["thedevkitchen.cms.template"].sudo().search(
@@ -174,7 +179,7 @@ class CmsTemplateController(http.Controller):
         company_id = request.env.company.id
         role = resolve_role(request.env.user) or ""
 
-        if role not in ("owner", "director", "manager"):
+        if role not in TEMPLATE_MANAGEMENT_ROLES:
             return _cms_error(403, "forbidden", "Insufficient permissions")
 
         template = request.env["thedevkitchen.cms.template"].sudo().search(
@@ -223,7 +228,7 @@ class CmsTemplateController(http.Controller):
         company_id = request.env.company.id
         role = resolve_role(request.env.user) or ""
 
-        if role not in ("owner", "director", "manager"):
+        if role not in TEMPLATE_MANAGEMENT_ROLES:
             return _cms_error(403, "forbidden", "Insufficient permissions")
 
         template = request.env["thedevkitchen.cms.template"].sudo().search(

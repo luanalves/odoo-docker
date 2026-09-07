@@ -17,15 +17,21 @@ from odoo.addons.thedevkitchen_cms.controllers.cms_template_generic_controller i
     _build_copy_create_vals,
     _unique_company_template_name,
 )
+from odoo.addons.thedevkitchen_cms.controllers.cms_template_controller import (
+    TEMPLATE_MANAGEMENT_ROLES,
+)
 
 
 class TestGenericTemplateManagementRoles(unittest.TestCase):
 
     def test_roles_match_cms_template_controller_exactly(self):
-        """Must be the literal same tuple as cms_template_controller.py's
-        role check, to avoid authorization drift between sibling controllers
-        (spec Non-Goal: 'não redigitar a lista')."""
-        self.assertEqual(GENERIC_TEMPLATE_MANAGEMENT_ROLES, ("owner", "director", "manager"))
+        """Must be the actual same object/value as cms_template_controller.py's
+        TEMPLATE_MANAGEMENT_ROLES constant (imported, not redigitized), to
+        avoid authorization drift between sibling controllers (spec Non-Goal:
+        'não redigitar a lista'). Comparing against the real source of truth
+        instead of a hardcoded literal means this test actually catches drift
+        if cms_template_controller.py's roles ever change."""
+        self.assertEqual(GENERIC_TEMPLATE_MANAGEMENT_ROLES, TEMPLATE_MANAGEMENT_ROLES)
 
     def test_agent_role_not_authorized(self):
         self.assertNotIn("agent", GENERIC_TEMPLATE_MANAGEMENT_ROLES)

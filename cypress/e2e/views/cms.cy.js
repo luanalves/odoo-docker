@@ -95,6 +95,7 @@ describe('CMS Admin UI — Odoo Views', () => {
     cy.get('.o_list_view', { timeout: 15000 }).should('exist');
     cy.get('body').should('not.contain.text', 'Missing Action');
     cy.get('body').should('not.contain.text', 'Oops!');
+    cy.screenshot('028-S4b-generic-templates-list', { capture: 'viewport' });
   });
 
   it('S4c: Generic Templates form saves a new record', () => {
@@ -118,6 +119,7 @@ describe('CMS Admin UI — Odoo Views', () => {
     cy.wait(1500);
     cy.get('.o_form_view:not(.o_form_editable), .o_form_view.o_form_readonly', { timeout: 10000 }).should('exist');
     cy.contains(uniqueName, { timeout: 5000 }).should('be.visible');
+    cy.screenshot('028-S4c-generic-template-saved', { capture: 'viewport' });
   });
 
   it('S5: Settings form shows company_slug and custom code section', () => {

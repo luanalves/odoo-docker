@@ -1,5 +1,49 @@
 <!--
-Sync Impact Report - Constitution v1.10.0
+Sync Impact Report - Constitution v1.11.0
+==========================================
+
+Version Change: 1.10.0 → 1.11.0
+Change Type: MINOR (new architectural patterns + reference implementation documented from Feature 028)
+Date: 2026-09-07
+
+Sections Modified:
+- Architectural Patterns → added "Platform-Level Non-Tenant Catalog Entity": a curated, platform-wide
+  entity with no company_id, admin-curated exclusively via Odoo UI (no REST write route at all), no
+  ir.rule (nothing to isolate) — access via ir.model.access.csv + explicit controller role check.
+- Architectural Patterns → added "Curated-Copy-Into-Tenant Pattern": a REST action that materializes an
+  independent, tenant-scoped snapshot from a platform-level entity, with a source_*_id traceability
+  field (ondelete=set null, readonly) and no ongoing synchronization; company_id always session-derived;
+  check-then-create for name uniqueness wrapped in a savepoint.
+- Architectural Patterns → added "Role-Set Reuse Across Sibling Controllers": a new controller enforcing
+  the same RBAC role tuple as an existing sibling MUST import a single shared constant, never an
+  independently hardcoded literal — and any drift-guard test must compare against that same imported
+  constant, not a second hardcoded copy. Enforced as a fix during Feature 028's own final review.
+- Reference Implementations → added Feature 028 (CMS Generic Templates) entry; updated the closing
+  "Use Feature X for..." summary paragraph to include it.
+- Governance → added "API Documentation Is Not Deferred" under Runtime Guidance: Swagger/Postman updates
+  must be verified with evidence in the same completion pass as tests, distinct from constitution/
+  knowledge-base updates (which correctly wait for implementation validation) — a real gap caught during
+  Feature 028 (Swagger left stale after the feature was declared complete).
+
+Removed Sections:
+- (none)
+
+Follow-up TODOs:
+- (none — all three patterns already have a validated reference implementation in Feature 028)
+
+Previous Amendments:
+- 2026-07-29 (v1.10.0 Feature 027 authorization hardening patterns)
+- 2026-06-08 (v1.9.1 Feature 023 Redis cache TTL clarifications)
+- 2026-06-08 (v1.9.0 Feature 023 Redis cache patterns initial)
+- 2026-06-03 (v1.8.0 Feature 022 SaaS Admin channel separation)
+- 2026-05-08 (v1.7.0 Feature 017 binary upload patterns)
+- 2026-05-03 (v1.6.0 Feature 015 service pipeline patterns)
+- 2026-02-16 (v1.3.0 Feature 009 security patterns)
+- 2026-02-08 (v1.2.0 Feature 007 reference implementation)
+-->
+
+<!--
+Sync Impact Report - Constitution v1.10.0 (historical)
 ==========================================
 
 Version Change: 1.9.1 → 1.10.0
@@ -837,6 +881,39 @@ When an authorization inconsistency is discovered between an already-protected p
 
 **Rationale**: A naive "harden this one broken case" fix leaves the same inconsistency latent for every other type/resource sharing the underlying pattern — the bug just moves, it doesn't disappear. But broadening the fix without cross-checking existing matrices risks *removing* a permission some other, already-correct part of the system deliberately grants — trading one bug for another. Both the "harden broadly" and the "verify against everything else that touches this resource" steps are required together.
 
+### Platform-Level Non-Tenant Catalog Entity (Feature 028)
+For an entity that must be visible platform-wide (across every company) rather than isolated per tenant — a curated catalog, not tenant data:
+1. **No `company_id` field at all** — the entity does not belong to any tenant, so there is no column to isolate on.
+2. **No `ir.rule` isolation** — since there is no company dimension, a record rule would have nothing to filter; access control is enforced entirely via `ir.model.access.csv` (model-level CRUD grants) plus an explicit role check inside the controller (`role not in (...)` → 403), not via record rules.
+3. **Write path is Odoo-UI-only, by design** — grant full CRUD in `ir.model.access.csv` to `base.group_system` only; grant `perm_read=1` (never write/create/unlink) to the relevant internal-user group for consistency. No REST create/update/delete route exists for the entity at all — this is a direct application of the existing "SaaS Admin Channel Separation" principle (`base.group_system` never authenticates via REST, ADR-029) to a new domain, not a new ADR.
+4. **REST exposure is read-only** — `GET` (list + detail) endpoints, gated by the same RBAC role tuple used for the tenant-scoped sibling resource (see "Role-Set Reuse Across Sibling Controllers" below), never by `company_id` filtering (there is none).
+
+**Rationale**: Some domain data is a platform-curated reference set, not tenant-owned data — a shared template library, a rate table, a taxonomy. Modeling it with a `company_id` and record rules would be actively wrong (there is no owning tenant) and would tempt a future author into writing a rule that always evaluates true, which is a code smell for "this model shouldn't have record rules at all." Making the admin-only write path structural (no REST route exists, not just role-gated) also means it can never be reintroduced by mistake in a future PR.
+
+**Reference**: `thedevkitchen.cms.template.generic` in `thedevkitchen_cms` — `18.0/extra-addons/thedevkitchen_cms/models/cms_template_generic.py`, `models/cms_template_generic_content.py`.
+
+### Curated-Copy-Into-Tenant Pattern (Feature 028)
+For an action that lets a tenant "adopt" a platform-level catalog record (see above) into their own tenant-scoped data:
+1. **Materialize an independent snapshot, never a live reference** — the copy is a normal `create()` into the tenant-scoped model, populated from the platform entity's current fields at the moment of copy. No FK-based live link, no lazy-loading from the source at read time.
+2. **Traceability field, not a sync mechanism** — add a `source_*_id` Many2one on the tenant-scoped model pointing back to the platform entity, `ondelete="set null"` (so deleting/deactivating the source never breaks or cascades into existing copies) and `readonly=True`. This field exists purely for observability/audit ("where did this come from"), never to drive behavior.
+3. **No ongoing synchronization, ever** — changes to the platform source after the copy is made MUST NOT propagate to already-created copies. If future requirements need "push updates to adopters," that is a different, explicitly-designed feature (e.g. a versioning/notification system), not an extension of this pattern.
+4. **`company_id` (or any tenant discriminator) is always session-derived** — never accepted from the request payload, per the existing ADR-008 principle; the copy action's create-vals builder should take the resolved `company_id` as an explicit typed parameter rather than a raw payload dict, so the tenant discriminator cannot leak in even by future accident (see the `_build_copy_create_vals(generic, name, company_id)` signature — it has no `data` parameter at all).
+5. **Name-conflict handling wraps the create in a savepoint** — checking uniqueness then creating is not atomic; wrap the check-then-create in `with request.env.cr.savepoint():` so a race (two concurrent copies producing the same candidate name) rolls back cleanly instead of leaving a partially-created tenant row from a failed multi-step write.
+
+**Rationale**: This is the tenant-facing half of the "Platform-Level Non-Tenant Catalog Entity" pattern — it's how tenant data gets seeded FROM a shared catalog without ever coupling the tenant's ongoing data lifecycle to the catalog's. Treating the copy as a permanent, independent snapshot (not a reference) keeps the mental model simple: once copied, it's yours, and nothing outside your company can ever change it again.
+
+**Reference**: `POST /api/v1/cms/templates/generic/{id}/copy` in `18.0/extra-addons/thedevkitchen_cms/controllers/cms_template_generic_controller.py`, which sets `source_generic_template_id` on the new `thedevkitchen.cms.template` row (field added on that model, `models/cms_template.py`).
+
+### Role-Set Reuse Across Sibling Controllers (Feature 028)
+When a new controller enforces the exact same RBAC role tuple as an existing, closely-related sibling controller (e.g. a platform-level catalog's read/copy actions using the same role gate as the tenant-scoped resource it feeds into):
+1. **The role tuple MUST be a single shared constant**, defined once in the original/sibling controller (e.g. `TEMPLATE_MANAGEMENT_ROLES = ("owner", "director", "manager")`), and imported — never independently hardcoded — by every other controller that needs the identical authorization boundary.
+2. **A guard unit test comparing the two constants for equality is not sufficient** if both sides are separately hardcoded literals — that test can never detect real drift (if the sibling's tuple changes, the guard's own hardcoded copy doesn't). The guard test MUST import and compare against the single shared constant, not redeclare it.
+3. **This was enforced as a fix, not a design-time decision** — Feature 028's final whole-branch review caught a case where the new controller had *independently* hardcoded the tuple a third time, with a comment falsely claiming it was "reused" from the sibling. The fix hoisted the constant into the sibling controller and had the new controller import + alias it (`GENERIC_TEMPLATE_MANAGEMENT_ROLES = TEMPLATE_MANAGEMENT_ROLES`), and rewrote the test to import the real constant. Treat this as the standard to apply from the start on any future sibling controller, not just as a retrospective fix.
+
+**Rationale**: Comments claiming "reused, never redigitized" are not enforcement — only an actual shared import is. Two independently-typed identical tuples will inevitably drift apart the first time one file is edited without the other in mind, silently reopening or narrowing an authorization boundary. A self-referential test that only checks "does my local copy match your local copy" gives false confidence; it must anchor to the one real source of truth.
+
+**Reference**: `TEMPLATE_MANAGEMENT_ROLES` in `18.0/extra-addons/thedevkitchen_cms/controllers/cms_template_controller.py`, imported as `GENERIC_TEMPLATE_MANAGEMENT_ROLES` in `controllers/cms_template_generic_controller.py`.
+
 ## Quality & Testing Standards
 
 ### Test Pyramid (ADR-002, ADR-003)
@@ -964,7 +1041,22 @@ When an authorization inconsistency is discovered between an already-protected p
 - **Flowcharts**: `specs/027-agent-profile-endpoint-unification/flowcharts.md`
 - **ADRs Referenced**: ADR-008 (anti-enumeration), ADR-011 (security decorators), ADR-015 (soft delete), ADR-019 (RBAC profiles)
 
-Use Feature 007 for standard CRUD patterns with HATEOAS. Use Feature 009 for security-sensitive flows requiring token-based authentication, anti-enumeration, and session management. Use Feature 013 for FSM-driven domain entities with concurrent access control, FIFO queues, and async notifications. Use Feature 015 for kanban-style pipeline domains with stage gates, conditional uniqueness, system tags, and aggregation endpoints. Use Feature 017 for binary file upload/download patterns with magic bytes validation, per-type quantity limits, and FR6.9-compliant error envelopes. Use Feature 022 for SaaS Admin cross-company access patterns (record rule overrides, API login block, noupdate compatibility). Use Feature 023 for Redis cache patterns on auth hot paths (JWT lookup, session lookup, ORM field cache injection, write hook invalidation, graceful fallback). Use Feature 027 for owner-only authorization hardening applied broadly across profile_type with existing-matrix cross-checks, batched sub-object embedding to avoid N+1 in list serializers, and atomic multi-model cascades with a deliberate deactivate/reactivate asymmetry (session invalidation never reversed).
+**Feature 028 — CMS Generic Templates (Platform Catalog)** (Non-Tenant Catalog + Curated-Copy Template):
+- **Problem**: No mechanism existed for the platform to offer a curated, shared set of CMS page templates (landing/property/about) that every company could start from, without either duplicating editorial effort per-tenant or awkwardly forcing a "shared" `company_id` onto tenant-scoped data.
+- **Solution**: New non-tenant model `thedevkitchen.cms.template.generic` (+ `.content`, 1:1) with no `company_id`, curated exclusively by `base.group_system` via the Odoo backend UI — no REST create/update/delete route exists for it at all (see "Platform-Level Non-Tenant Catalog Entity" pattern above). `owner`/`director`/`manager` of any company can `GET` (list/detail) the catalog and `POST .../copy` a generic template into their own company's existing `thedevkitchen.cms.template` (Feature 021), which gains a new `source_generic_template_id` traceability field (see "Curated-Copy-Into-Tenant Pattern" above).
+- **Authorization**: The exact same role tuple as the sibling company-scoped Templates controller, hoisted into one shared constant during final review to prevent drift (see "Role-Set Reuse Across Sibling Controllers" above).
+- **Data Integrity on Copy**: `company_id` is always `request.env.company.id`, never the request payload (ADR-008); the two-step write (new template row, then its content row) is wrapped in `with request.env.cr.savepoint():` so a mid-write failure never leaves an orphaned, content-less template — a Critical finding from the final whole-branch review, fixed before merge.
+- **Name-Conflict Handling**: Incrementing `" (2)"`, `" (3)"`... suffix on a name collision within the target company, up to 100 attempts, then `409 generic_copy_conflict` — same duplication pattern already used for CMS page duplication.
+- **API**: 3 REST endpoints — `GET /api/v1/cms/templates/generic`, `GET /api/v1/cms/templates/generic/{id}`, `POST /api/v1/cms/templates/generic/{id}/copy` — all triple-decorated (`@require_jwt` + `@require_session` + `@require_company`).
+- **Testing**: 115 unit tests (module total, incl. new ones for this feature), 6 TransactionCase integration tests (first `tests/integration/` in `thedevkitchen_cms`, mirroring `quicksol_estate`'s existing unit/integration split), 15 E2E API scenarios (`integration_tests/test_us028_cms_generic_templates.sh`), 8 Cypress UI tests, all with captured evidence (screenshots, videos, response logs) organized under `cypress/screenshots/028-cms-generic-templates/`.
+- **Documentation**: Swagger/OpenAPI (`data/api_endpoints.xml`, tag "CMS Generic Templates") and Postman (`docs/postman/quicksol_api_v1.45_postman_collection.json`, folder "Generic Templates (Feature 028)" under "25. CMS Domain") both updated and evidence-verified as part of the same completion pass as the tests — not deferred (see Runtime Guidance addendum below).
+- **Location**: `18.0/extra-addons/thedevkitchen_cms/models/cms_template_generic.py`, `models/cms_template_generic_content.py`, `controllers/cms_template_generic_controller.py`
+- **Spec**: `specs/028-cms-generic-templates/spec-idea.md`
+- **Plan**: `specs/028-cms-generic-templates/plan-idea.md`
+- **Flowcharts**: `specs/028-cms-generic-templates/flowcharts.md`
+- **ADRs Referenced**: ADR-004 (naming), ADR-008 (multi-tenancy/session-derived company_id), ADR-011 (security decorators), ADR-015 (soft delete), ADR-019 (RBAC), ADR-029 (SaaS Admin channel separation)
+
+Use Feature 007 for standard CRUD patterns with HATEOAS. Use Feature 009 for security-sensitive flows requiring token-based authentication, anti-enumeration, and session management. Use Feature 013 for FSM-driven domain entities with concurrent access control, FIFO queues, and async notifications. Use Feature 015 for kanban-style pipeline domains with stage gates, conditional uniqueness, system tags, and aggregation endpoints. Use Feature 017 for binary file upload/download patterns with magic bytes validation, per-type quantity limits, and FR6.9-compliant error envelopes. Use Feature 022 for SaaS Admin cross-company access patterns (record rule overrides, API login block, noupdate compatibility). Use Feature 023 for Redis cache patterns on auth hot paths (JWT lookup, session lookup, ORM field cache injection, write hook invalidation, graceful fallback). Use Feature 027 for owner-only authorization hardening applied broadly across profile_type with existing-matrix cross-checks, batched sub-object embedding to avoid N+1 in list serializers, and atomic multi-model cascades with a deliberate deactivate/reactivate asymmetry (session invalidation never reversed). Use Feature 028 for platform-level non-tenant catalog entities offering a curated-copy-into-tenant action, and for the shared-role-tuple-constant discipline across sibling controllers.
 
 ### Required Tests per Feature
 - **Unit**: Services, helpers, serializers, decorators
@@ -1047,4 +1139,9 @@ Para criação de testes, **DEVEM ser utilizados** os prompts e agents especiali
 - Constitution provides strategic direction; copilot-instructions provides tactical rules
 - Conflicts resolved in favor of constitution (strategic supersedes tactical)
 
-**Version**: 1.10.0 | **Ratified**: 2026-01-03 | **Last Amended**: 2026-07-29
+### API Documentation Is Not Deferred (Feature 028)
+Swagger/OpenAPI (`data/api_endpoints.xml` → `thedevkitchen.api.endpoint` → `/api/docs`, `/api/v1/openapi.json`) and the Postman collection (ADR-016) MUST be updated, and that update verified with evidence (a screenshot of `/api/docs` or the generated OpenAPI JSON showing the new endpoints; a diff of the Postman collection), in the same completion pass as the feature's tests — not deferred to a later "documentation" phase, and not satisfied by "endpoints implemented and tested" alone.
+
+This is distinct from constitution/knowledge-base updates (see `CLAUDE.md`'s spec-kit section and the project's own workflow conventions), which SHOULD wait until a feature's implementation is validated before propagating speculative patterns into governance docs — API documentation carries no such "wait and see" rationale, since it is a mechanical description of code that has already passed review. Conflating the two and deferring both together was an actual regression caught during Feature 028: Swagger was left stale after the feature was declared complete, requiring a follow-up correction pass.
+
+**Version**: 1.11.0 | **Ratified**: 2026-01-03 | **Last Amended**: 2026-09-07

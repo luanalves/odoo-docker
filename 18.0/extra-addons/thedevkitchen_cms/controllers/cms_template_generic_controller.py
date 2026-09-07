@@ -195,6 +195,9 @@ class CmsTemplateGenericController(http.Controller):
         except (ValueError, UnicodeDecodeError):
             return _cms_error(400, "validation_error", "Invalid JSON in request body")
 
+        if not isinstance(data, dict):
+            return _cms_error(400, "validation_error", "Request body must be a JSON object")
+
         company_id = request.env.company.id
         requested_name = (data.get("name") or "").strip() or generic.name
         name = _unique_company_template_name(request.env, requested_name, company_id)
@@ -205,10 +208,11 @@ class CmsTemplateGenericController(http.Controller):
         create_vals = _build_copy_create_vals(generic, name, company_id)
 
         try:
-            new_template = request.env["thedevkitchen.cms.template"].sudo().create(create_vals)
-            request.env["thedevkitchen.cms.template.content"].sudo().create(
-                {"template_id": new_template.id, "content": source_content}
-            )
+            with request.env.cr.savepoint():
+                new_template = request.env["thedevkitchen.cms.template"].sudo().create(create_vals)
+                request.env["thedevkitchen.cms.template.content"].sudo().create(
+                    {"template_id": new_template.id, "content": source_content}
+                )
         except (ValidationError, UserError) as exc:
             return _cms_error(422, "validation_error", str(exc.args[0]) if exc.args else "Validation failed")
         except Exception:

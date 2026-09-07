@@ -39,6 +39,14 @@ class CmsTemplate(models.Model):
         sanitize=False,
         help="Rich text content for editing in the Odoo admin UI. The API uses the Puck JSON (content_ids).",
     )
+    source_generic_template_id = fields.Many2one(
+        comodel_name="thedevkitchen.cms.template.generic",
+        string="Source Generic Template",
+        ondelete="set null",
+        readonly=True,
+        help="Generic (platform-level) template this record was copied from, if any. "
+        "Null when created manually. Deactivating/deleting the source never affects this copy.",
+    )
 
     # ==================== SQL CONSTRAINTS ====================
 

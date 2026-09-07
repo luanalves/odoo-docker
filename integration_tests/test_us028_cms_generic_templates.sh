@@ -64,8 +64,14 @@ fi
 echo ""; echo "S2: GET /api/v1/cms/templates/generic?category=property"
 RESP=$(cms_req GET "$API_BASE/cms/templates/generic?category=property" "$OWNER_SID" "$OWNER_CID" -o /tmp/gt_list_cat.json -w "%{http_code}")
 if [ "$RESP" = "200" ]; then
-    ALL_PROPERTY=$(python3 -c "import json; items=json.load(open('/tmp/gt_list_cat.json'))['items']; print(all(i['category']=='property' for i in items))" 2>/dev/null || echo "False")
-    [ "$ALL_PROPERTY" = "True" ] && _pass "Category filter returns only 'property' items" || _fail "Category filter" "Non-property item present"
+    NON_EMPTY=$(python3 -c "import json; items=json.load(open('/tmp/gt_list_cat.json'))['items']; print(len(items) > 0)" 2>/dev/null || echo "False")
+    if [ "$NON_EMPTY" = "True" ]; then
+        _pass "Category filter returns a non-empty result"
+        ALL_PROPERTY=$(python3 -c "import json; items=json.load(open('/tmp/gt_list_cat.json'))['items']; print(all(i['category']=='property' for i in items))" 2>/dev/null || echo "False")
+        [ "$ALL_PROPERTY" = "True" ] && _pass "Category filter returns only 'property' items" || _fail "Category filter" "Non-property item present"
+    else
+        _fail "Category filter" "Expected at least one 'property' item, got an empty list"
+    fi
 else
     _fail "GET /templates/generic?category=property" "Expected 200, got $RESP"
 fi
@@ -152,6 +158,36 @@ if [ -n "$COPY_ID" ]; then
     [ "$RESP" = "200" ] && _pass "Copy $COPY_ID still accessible (snapshot independent of source)" || _fail "Copy independence" "Expected 200, got $RESP"
 else
     _skip "S9: no COPY_ID"
+fi
+
+# ---- S10: Lookup inactive seed template id via DB (not exposed by any API) ----
+echo ""; echo "S10: Resolve seed_generic_inactive id (direct DB lookup — API never exposes inactive generics)"
+COMPOSE_DIR="$(cd "$SCRIPT_DIR/../18.0" && pwd)"
+INACTIVE_GT_ID=$(docker compose -f "$COMPOSE_DIR/docker-compose.yml" exec -T db psql -U odoo -d realestate -t -c \
+    "SELECT res_id FROM ir_model_data WHERE model = 'thedevkitchen.cms.template.generic' AND module = 'thedevkitchen_cms' AND name = 'cms_generic_template_inactive';" 2>/dev/null | xargs || echo "")
+if [ -n "$INACTIVE_GT_ID" ]; then
+    _pass "Resolved seed_generic_inactive id=$INACTIVE_GT_ID via ir_model_data"
+else
+    _skip "S10: could not resolve seed_generic_inactive id (docker/db unavailable)"
+fi
+
+# ---- S11: GET detail on inactive generic template → 404 ----
+echo ""; echo "S11: GET /api/v1/cms/templates/generic/:id — inactive template returns 404"
+if [ -n "$INACTIVE_GT_ID" ]; then
+    RESP=$(cms_req GET "$API_BASE/cms/templates/generic/$INACTIVE_GT_ID" "$OWNER_SID" "$OWNER_CID" -o /tmp/gt_inactive_detail.json -w "%{http_code}")
+    [ "$RESP" = "404" ] && _pass "GET detail on inactive generic template returns 404" || _fail "GET inactive detail" "Expected 404, got $RESP"
+else
+    _skip "S11: no INACTIVE_GT_ID"
+fi
+
+# ---- S12: POST copy on inactive generic template → 404 ----
+echo ""; echo "S12: POST /api/v1/cms/templates/generic/:id/copy — inactive template returns 404"
+if [ -n "$INACTIVE_GT_ID" ]; then
+    RESP=$(cms_req POST "$API_BASE/cms/templates/generic/$INACTIVE_GT_ID/copy" "$OWNER_SID" "$OWNER_CID" \
+        -o /tmp/gt_inactive_copy.json -w "%{http_code}" -H "Content-Type: application/json" -d '{}')
+    [ "$RESP" = "404" ] && _pass "POST copy on inactive generic template returns 404" || _fail "POST inactive copy" "Expected 404, got $RESP"
+else
+    _skip "S12: no INACTIVE_GT_ID"
 fi
 
 echo ""; echo "========================================"

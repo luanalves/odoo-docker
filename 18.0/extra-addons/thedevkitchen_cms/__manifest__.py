@@ -50,6 +50,7 @@ Technical:
         "security/cms_record_rules.xml",
         "data/api_endpoints.xml",
         "data/cms_demo_pages.xml",
+        "data/cms_generic_templates_seed.xml",
         "views/cms_page_views.xml",
         "views/cms_template_views.xml",
         "views/cms_template_generic_views.xml",

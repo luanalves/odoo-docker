@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+
+        <!--
+            Feature 028: CMS Generic Templates
+            ============================================================
+            - owner_urban@seed.com.br: a second-company owner, used only to
+              verify that a copy created in company_seed_imobiliaria never
+              leaks into a different company (multi-tenancy isolation).
+              Reuses the already-seeded company_urban_properties
+              (quicksol_estate/data/company_seed.xml) instead of creating a
+              new company.
+            - 3 generic templates: 2 active (landing, property) + 1 inactive
+              (about), covering the 404-on-inactive and category-filter
+              test cases.
+            Credentials: owner_urban@seed.com.br / seed123
+            ============================================================
+        -->
+
+        <record id="user_seed_owner_urban" model="res.users">
+            <field name="name">Seed Owner (Urban Properties)</field>
+            <field name="login">owner_urban@seed.com.br</field>
+            <field name="password">seed123</field>
+            <field name="email">owner_urban@seed.com.br</field>
+            <field name="groups_id" eval="[(6, 0, [
+                ref('base.group_user'),
+                ref('quicksol_estate.group_real_estate_owner')
+            ])]"/>
+            <field name="company_ids" eval="[(6, 0, [
+                ref('quicksol_estate.company_urban_properties')
+            ])]"/>
+            <field name="company_id" ref="quicksol_estate.company_urban_properties"/>
+        </record>
+
+        <record id="cms_generic_template_landing" model="thedevkitchen.cms.template.generic">
+            <field name="name">seed_generic_landing</field>
+            <field name="category">landing</field>
+        </record>
+        <record id="cms_generic_template_landing_content" model="thedevkitchen.cms.template.generic.content">
+            <field name="template_id" ref="cms_generic_template_landing"/>
+            <field name="content">{"content": []}</field>
+        </record>
+
+        <record id="cms_generic_template_property" model="thedevkitchen.cms.template.generic">
+            <field name="name">seed_generic_property</field>
+            <field name="category">property</field>
+        </record>
+        <record id="cms_generic_template_property_content" model="thedevkitchen.cms.template.generic.content">
+            <field name="template_id" ref="cms_generic_template_property"/>
+            <field name="content">{"content": []}</field>
+        </record>
+
+        <record id="cms_generic_template_inactive" model="thedevkitchen.cms.template.generic">
+            <field name="name">seed_generic_inactive</field>
+            <field name="category">about</field>
+            <field name="active" eval="False"/>
+        </record>
+
+    </data>
+</odoo>

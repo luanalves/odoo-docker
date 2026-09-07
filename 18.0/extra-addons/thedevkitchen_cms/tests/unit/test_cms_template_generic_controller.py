@@ -14,6 +14,8 @@ from odoo.addons.thedevkitchen_cms.controllers.cms_template_generic_controller i
     GENERIC_TEMPLATE_MANAGEMENT_ROLES,
     _serialize_generic_template,
     _clamp_pagination_params,
+    _build_copy_create_vals,
+    _unique_company_template_name,
 )
 
 
@@ -137,6 +139,82 @@ class TestSerializeGenericTemplate(unittest.TestCase):
         self.assertEqual(data["name"], "seed_generic_landing")
         self.assertEqual(data["category"], "landing")
         self.assertTrue(data["active"])
+
+
+class TestBuildCopyCreateVals(unittest.TestCase):
+
+    def _make_generic(self, id_=1, category="landing"):
+        generic = MagicMock()
+        generic.id = id_
+        generic.category = category
+        return generic
+
+    def test_vals_use_explicit_company_id_not_payload(self):
+        """ADR-008: company_id always comes from the session-derived argument,
+        never from request payload — this function's signature doesn't even
+        accept a raw payload dict, only the already-resolved company_id int."""
+        generic = self._make_generic()
+        vals = _build_copy_create_vals(generic, "Landing Padrão", company_id=42)
+        self.assertEqual(vals["company_id"], 42)
+
+    def test_vals_set_source_generic_template_id(self):
+        generic = self._make_generic(id_=7)
+        vals = _build_copy_create_vals(generic, "Landing Padrão", company_id=1)
+        self.assertEqual(vals["source_generic_template_id"], 7)
+
+    def test_vals_copy_category_from_generic(self):
+        generic = self._make_generic(category="property")
+        vals = _build_copy_create_vals(generic, "Some Name", company_id=1)
+        self.assertEqual(vals["category"], "property")
+
+    def test_vals_use_given_name(self):
+        generic = self._make_generic()
+        vals = _build_copy_create_vals(generic, "Custom Name", company_id=1)
+        self.assertEqual(vals["name"], "Custom Name")
+
+    def test_vals_only_contain_whitelisted_keys(self):
+        generic = self._make_generic()
+        vals = _build_copy_create_vals(generic, "X", company_id=1)
+        self.assertEqual(set(vals.keys()), {"name", "category", "company_id", "source_generic_template_id"})
+
+
+class TestUniqueCompanyTemplateName(unittest.TestCase):
+
+    def _make_env(self, existing_names):
+        """Mock env['thedevkitchen.cms.template'].sudo().search_count() to
+        report a conflict for any name already in `existing_names`."""
+        template_model = MagicMock()
+
+        # domain is a list of tuples like [("name", "=", candidate), ("company_id", "=", company_id)]
+        def _search_count_from_domain(domain):
+            name = next(v for (f, op, v) in domain if f == "name")
+            return 1 if name in existing_names else 0
+
+        template_model.sudo.return_value.search_count.side_effect = _search_count_from_domain
+        env = {"thedevkitchen.cms.template": template_model}
+        return env
+
+    def test_returns_base_name_when_no_conflict(self):
+        env = self._make_env(existing_names=set())
+        result = _unique_company_template_name(env, "Landing Padrão", company_id=1)
+        self.assertEqual(result, "Landing Padrão")
+
+    def test_applies_suffix_on_single_conflict(self):
+        env = self._make_env(existing_names={"Landing Padrão"})
+        result = _unique_company_template_name(env, "Landing Padrão", company_id=1)
+        self.assertEqual(result, "Landing Padrão (2)")
+
+    def test_applies_next_suffix_when_first_suffix_also_taken(self):
+        env = self._make_env(existing_names={"Landing Padrão", "Landing Padrão (2)"})
+        result = _unique_company_template_name(env, "Landing Padrão", company_id=1)
+        self.assertEqual(result, "Landing Padrão (3)")
+
+    def test_returns_none_when_attempts_exhausted(self):
+        # Base name + suffixes (2..101) all taken -> 100 total candidates exhausted.
+        existing = {"Landing Padrão"} | {f"Landing Padrão ({n})" for n in range(2, 102)}
+        env = self._make_env(existing_names=existing)
+        result = _unique_company_template_name(env, "Landing Padrão", company_id=1)
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

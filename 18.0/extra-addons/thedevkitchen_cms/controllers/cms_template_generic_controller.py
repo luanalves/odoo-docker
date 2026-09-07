@@ -20,6 +20,8 @@ _GENERIC_TEMPLATE_LIST_LIMIT = 50
 # to avoid authorization drift between sibling controllers (ADR-019).
 GENERIC_TEMPLATE_MANAGEMENT_ROLES = ("owner", "director", "manager")
 
+_COPY_NAME_MAX_ATTEMPTS = 100
+
 
 def _clamp_pagination_params(limit, offset):
     """Validate and clamp pagination parameters.
@@ -59,6 +61,35 @@ def _serialize_generic_template(template, include_content=False):
     if include_content:
         data["content"] = template.content_ids[0].content if template.content_ids else None
     return data
+
+
+def _unique_company_template_name(env, base_name, company_id):
+    """Return a name unique for (name, company_id) in thedevkitchen.cms.template,
+    applying an incrementing ' (N)' suffix on conflict (same pattern as
+    CmsPageService._unique_slug). Returns None if no free name is found
+    within _COPY_NAME_MAX_ATTEMPTS additional attempts (caller returns 409)."""
+    Template = env["thedevkitchen.cms.template"].sudo()
+    candidate = base_name
+    if not Template.search_count([("name", "=", candidate), ("company_id", "=", company_id)]):
+        return candidate
+    for suffix in range(2, _COPY_NAME_MAX_ATTEMPTS + 2):
+        candidate = f"{base_name} ({suffix})"
+        if not Template.search_count([("name", "=", candidate), ("company_id", "=", company_id)]):
+            return candidate
+    return None
+
+
+def _build_copy_create_vals(generic, name, company_id):
+    """Build the create() vals for the company-scoped copy of a generic
+    template. Only whitelisted fields are included — company_id always comes
+    from the caller's already-resolved session company (ADR-008), never from
+    a raw request payload (this function doesn't even accept one)."""
+    return {
+        "name": name,
+        "category": generic.category,
+        "company_id": company_id,
+        "source_generic_template_id": generic.id,
+    }
 
 
 class CmsTemplateGenericController(http.Controller):
@@ -133,3 +164,66 @@ class CmsTemplateGenericController(http.Controller):
             status=200,
             content_type="application/json",
         )
+
+    # ==================== COPY ====================
+
+    @http.route(
+        "/api/v1/cms/templates/generic/<int:template_id>/copy",
+        type="http",
+        auth="none",
+        methods=["POST"],
+        csrf=False,
+        cors="*",
+    )
+    @require_jwt
+    @require_session
+    @require_company
+    def copy_generic_template(self, template_id, **kwargs):
+        role = resolve_role(request.env.user) or ""
+        if role not in GENERIC_TEMPLATE_MANAGEMENT_ROLES:
+            return _cms_error(403, "forbidden", "Insufficient permissions")
+
+        generic = request.env["thedevkitchen.cms.template.generic"].sudo().search(
+            [("id", "=", template_id), ("active", "=", True)], limit=1
+        )
+        if not generic:
+            return _cms_error(404, "not_found", f"Generic template {template_id} not found")
+
+        try:
+            raw_body = request.httprequest.data
+            data = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except (ValueError, UnicodeDecodeError):
+            return _cms_error(400, "validation_error", "Invalid JSON in request body")
+
+        company_id = request.env.company.id
+        requested_name = (data.get("name") or "").strip() or generic.name
+        name = _unique_company_template_name(request.env, requested_name, company_id)
+        if name is None:
+            return _cms_error(409, "generic_copy_conflict", "Could not find a free name for the copy")
+
+        source_content = generic.content_ids[0].content if generic.content_ids else None
+        create_vals = _build_copy_create_vals(generic, name, company_id)
+
+        try:
+            new_template = request.env["thedevkitchen.cms.template"].sudo().create(create_vals)
+            request.env["thedevkitchen.cms.template.content"].sudo().create(
+                {"template_id": new_template.id, "content": source_content}
+            )
+        except (ValidationError, UserError) as exc:
+            return _cms_error(422, "validation_error", str(exc.args[0]) if exc.args else "Validation failed")
+        except Exception:
+            _logger.exception("CMS copy_generic_template error")
+            return _cms_error(500, "server_error", "An unexpected error occurred")
+
+        payload = {
+            "id": new_template.id,
+            "name": new_template.name,
+            "category": new_template.category,
+            "active": new_template.active,
+            "company_id": new_template.company_id.id,
+            "source_generic_template_id": generic.id,
+            "content": source_content,
+            "created_at": new_template.create_date.isoformat() if new_template.create_date else None,
+            "updated_at": new_template.write_date.isoformat() if new_template.write_date else None,
+        }
+        return Response(json.dumps(payload), status=201, content_type="application/json")

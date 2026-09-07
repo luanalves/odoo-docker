@@ -52,6 +52,7 @@ Technical:
         "data/cms_demo_pages.xml",
         "views/cms_page_views.xml",
         "views/cms_template_views.xml",
+        "views/cms_template_generic_views.xml",
         "views/cms_media_views.xml",
         "views/cms_settings_views.xml",
         "views/cms_menus.xml",

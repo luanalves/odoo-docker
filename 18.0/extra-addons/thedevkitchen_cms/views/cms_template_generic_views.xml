@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data>
+
+        <!-- ===================== CMS GENERIC TEMPLATE: LIST VIEW ===================== -->
+        <record id="view_cms_template_generic_list" model="ir.ui.view">
+            <field name="name">thedevkitchen.cms.template.generic.list</field>
+            <field name="model">thedevkitchen.cms.template.generic</field>
+            <field name="arch" type="xml">
+                <list string="Generic Templates">
+                    <field name="name"/>
+                    <field name="category"/>
+                    <field name="active"/>
+                    <field name="create_date" string="Created At" optional="show"/>
+                </list>
+            </field>
+        </record>
+
+        <!-- ===================== CMS GENERIC TEMPLATE: FORM VIEW ===================== -->
+        <record id="view_cms_template_generic_form" model="ir.ui.view">
+            <field name="name">thedevkitchen.cms.template.generic.form</field>
+            <field name="model">thedevkitchen.cms.template.generic</field>
+            <field name="arch" type="xml">
+                <form string="Generic Template">
+                    <sheet>
+                        <div class="oe_title">
+                            <h1>
+                                <field name="name" placeholder="Generic Template Name"/>
+                            </h1>
+                        </div>
+                        <group>
+                            <group>
+                                <field name="category"/>
+                                <field name="active"/>
+                            </group>
+                        </group>
+                        <notebook>
+                            <page string="Puck JSON" name="puck_content">
+                                <field name="content_ids" nolabel="1">
+                                    <list>
+                                        <field name="content" widget="text"/>
+                                    </list>
+                                </field>
+                            </page>
+                        </notebook>
+                    </sheet>
+                </form>
+            </field>
+        </record>
+
+        <!-- ===================== CMS GENERIC TEMPLATE: ACTION ===================== -->
+        <record id="action_cms_templates_generic" model="ir.actions.act_window">
+            <field name="name">Generic Templates</field>
+            <field name="res_model">thedevkitchen.cms.template.generic</field>
+            <field name="view_mode">list,form</field>
+        </record>
+
+    </data>
+</odoo>

@@ -35,3 +35,7 @@ access_cms_settings_manager,Manager: CMS Settings,model_thedevkitchen_cms_settin
 access_cms_settings_agent,Agent: CMS Settings,model_thedevkitchen_cms_settings,quicksol_estate.group_real_estate_agent,1,0,0,0
 access_cms_settings_director,Director: CMS Settings,model_thedevkitchen_cms_settings,quicksol_estate.group_real_estate_director,1,1,1,0
 access_cms_settings_admin,Admin: CMS Settings,model_thedevkitchen_cms_settings,base.group_system,1,1,1,1
+access_cms_template_generic_admin,Admin: CMS Generic Template,model_thedevkitchen_cms_template_generic,base.group_system,1,1,1,1
+access_cms_template_generic_user,User: CMS Generic Template (read-only),model_thedevkitchen_cms_template_generic,quicksol_estate.group_real_estate_user,1,0,0,0
+access_cms_template_generic_content_admin,Admin: CMS Generic Template Content,model_thedevkitchen_cms_template_generic_content,base.group_system,1,1,1,1
+access_cms_template_generic_content_user,User: CMS Generic Template Content (read-only),model_thedevkitchen_cms_template_generic_content,quicksol_estate.group_real_estate_user,1,0,0,0

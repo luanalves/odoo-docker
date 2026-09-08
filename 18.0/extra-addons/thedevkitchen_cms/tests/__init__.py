@@ -17,3 +17,7 @@ from .integration import test_cms_slug_service
 
 # Feature 029: PII-free public property serializer
 from .integration import test_cms_public_property_serializer
+
+# Feature 029: domain builder correctness against a real DB (multi-tenancy +
+# publish_website/active visibility gates) and serializer N+1 query count
+from .integration import test_cms_public_property_domain

@@ -7,3 +7,7 @@ from . import integration
 
 # Feature 028: thedevkitchen.cms.template.generic ORM-level validations
 from .integration import test_cms_template_generic_crud
+
+# PR #31 review fix: copy_generic_template's name-allocation race (real
+# UNIQUE constraint, not simulated) — see the module docstring for context.
+from .integration import test_cms_template_generic_copy_race

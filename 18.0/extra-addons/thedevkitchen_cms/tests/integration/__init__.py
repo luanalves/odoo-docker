@@ -8,3 +8,4 @@ Execution: docker compose -f 18.0/docker-compose.yml exec odoo \
     --test-enable --stop-after-init --log-level=test --http-port=8988
 """
 from . import test_cms_template_generic_crud
+from . import test_cms_template_generic_copy_race

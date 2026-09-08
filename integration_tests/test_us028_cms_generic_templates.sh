@@ -190,6 +190,16 @@ else
     _skip "S12: no INACTIVE_GT_ID"
 fi
 
+# ---- S13: POST copy with a non-string 'name' returns 400 (PR #31 review) ----
+echo ""; echo "S13: POST copy with non-string 'name' in body → 400"
+if [ -n "$GT_ID" ]; then
+    RESP=$(cms_req POST "$API_BASE/cms/templates/generic/$GT_ID/copy" "$OWNER_SID" "$OWNER_CID" \
+        -o /tmp/gt_copy_bad_name.json -w "%{http_code}" -H "Content-Type: application/json" -d '{"name": 42}')
+    [ "$RESP" = "400" ] && _pass "POST copy with numeric 'name' returns 400" || _fail "POST copy non-string name" "Expected 400, got $RESP"
+else
+    _skip "S13: no GT_ID"
+fi
+
 echo ""; echo "========================================"
 echo "Results: PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
 echo "========================================"

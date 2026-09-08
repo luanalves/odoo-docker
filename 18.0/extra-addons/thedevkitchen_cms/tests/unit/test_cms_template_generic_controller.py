@@ -10,12 +10,16 @@ unit tests in this module.
 import unittest
 from unittest.mock import MagicMock
 
+from psycopg2.errors import UniqueViolation
+
 from odoo.addons.thedevkitchen_cms.controllers.cms_template_generic_controller import (
     GENERIC_TEMPLATE_MANAGEMENT_ROLES,
     _serialize_generic_template,
     _clamp_pagination_params,
     _build_copy_create_vals,
     _unique_company_template_name,
+    _create_company_template_copy,
+    _COPY_CREATE_RETRY_ATTEMPTS,
 )
 from odoo.addons.thedevkitchen_cms.controllers.cms_template_controller import (
     TEMPLATE_MANAGEMENT_ROLES,
@@ -221,6 +225,117 @@ class TestUniqueCompanyTemplateName(unittest.TestCase):
         env = self._make_env(existing_names=existing)
         result = _unique_company_template_name(env, "Landing Padrão", company_id=1)
         self.assertIsNone(result)
+
+
+class TestCreateCompanyTemplateCopy(unittest.TestCase):
+    """PR #31 review (P1): the previous two-step
+    "check name via search_count, then create()" was not atomic — a
+    concurrent request could create the winning name between the two steps,
+    surfacing as an unhandled psycopg2.errors.UniqueViolation -> 500 instead
+    of the documented retry/409 behavior. These tests verify the retry
+    control flow with mocks; the actual DB-level race is additionally
+    covered by a TransactionCase in tests/integration/ (real UNIQUE
+    constraint, not a simulated exception)."""
+
+    def _make_generic(self, id_=1, category="landing"):
+        generic = MagicMock()
+        generic.id = id_
+        generic.category = category
+        return generic
+
+    def _make_env(self, create_side_effect, existing_names=frozenset()):
+        template_model = MagicMock()
+        content_model = MagicMock()
+
+        def _search_count_from_domain(domain):
+            name = next(v for (f, op, v) in domain if f == "name")
+            return 1 if name in existing_names else 0
+
+        template_model.sudo.return_value.search_count.side_effect = _search_count_from_domain
+        template_model.sudo.return_value.create.side_effect = create_side_effect
+
+        env = MagicMock()
+        env.__getitem__.side_effect = lambda key: {
+            "thedevkitchen.cms.template": template_model,
+            "thedevkitchen.cms.template.content": content_model,
+        }[key]
+        # Real cr.savepoint() does not swallow exceptions raised inside the
+        # `with` block — it rolls back to the savepoint and re-raises. A bare
+        # MagicMock's __exit__ returns a (truthy) MagicMock by default, which
+        # would incorrectly suppress the exception, so pin it to False.
+        env.cr.savepoint.return_value.__exit__ = MagicMock(return_value=False)
+        return env, template_model, content_model
+
+    def test_succeeds_on_first_attempt_when_no_conflict(self):
+        generic = self._make_generic()
+        new_template = MagicMock(id=99)
+        env, template_model, content_model = self._make_env(create_side_effect=[new_template])
+
+        result = _create_company_template_copy(env, generic, "Landing", company_id=1, source_content="{}")
+
+        self.assertIs(result, new_template)
+        self.assertEqual(template_model.sudo.return_value.create.call_count, 1)
+        content_model.sudo.return_value.create.assert_called_once_with(
+            {"template_id": 99, "content": "{}"}
+        )
+
+    def test_retries_on_unique_violation_then_succeeds(self):
+        """A concurrent request wins the race on the first attempt (real
+        UniqueViolation from the DB, not a search_count conflict this
+        process could have seen in advance) — the second attempt must
+        succeed rather than propagating the exception as a 500."""
+        generic = self._make_generic()
+        new_template = MagicMock(id=100)
+        env, template_model, content_model = self._make_env(
+            create_side_effect=[UniqueViolation("duplicate key value"), new_template]
+        )
+
+        result = _create_company_template_copy(env, generic, "Landing", company_id=1, source_content="{}")
+
+        self.assertIs(result, new_template)
+        self.assertEqual(template_model.sudo.return_value.create.call_count, 2)
+
+    def test_gives_up_after_max_retries(self):
+        """Sustained collision on every attempt returns None (caller turns
+        this into 409 generic_copy_conflict) instead of retrying forever or
+        letting the exception propagate."""
+        generic = self._make_generic()
+        env, template_model, content_model = self._make_env(
+            create_side_effect=UniqueViolation("duplicate key value")
+        )
+
+        result = _create_company_template_copy(env, generic, "Landing", company_id=1, source_content="{}")
+
+        self.assertIsNone(result)
+        self.assertEqual(template_model.sudo.return_value.create.call_count, _COPY_CREATE_RETRY_ATTEMPTS)
+
+    def test_returns_none_immediately_when_no_free_name_at_all(self):
+        """When _unique_company_template_name itself can't find a free name
+        (100 candidates all taken), _create_company_template_copy must not
+        attempt create() at all."""
+        existing = {"Landing"} | {f"Landing ({n})" for n in range(2, 102)}
+        generic = self._make_generic()
+        env, template_model, content_model = self._make_env(
+            create_side_effect=AssertionError("create() should never be called"),
+            existing_names=existing,
+        )
+
+        result = _create_company_template_copy(env, generic, "Landing", company_id=1, source_content="{}")
+
+        self.assertIsNone(result)
+        template_model.sudo.return_value.create.assert_not_called()
+
+    def test_other_exceptions_propagate_unchanged(self):
+        """A non-UniqueViolation error (e.g. a different constraint, or a
+        genuine bug) must propagate to the caller, not be silently retried
+        or swallowed — only the specific race this fix targets is caught."""
+        generic = self._make_generic()
+        env, template_model, content_model = self._make_env(create_side_effect=ValueError("boom"))
+
+        with self.assertRaises(ValueError):
+            _create_company_template_copy(env, generic, "Landing", company_id=1, source_content="{}")
+
+        self.assertEqual(template_model.sudo.return_value.create.call_count, 1)
 
 
 if __name__ == "__main__":

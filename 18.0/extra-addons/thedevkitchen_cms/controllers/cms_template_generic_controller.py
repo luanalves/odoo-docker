@@ -4,6 +4,7 @@ import logging
 from odoo import http
 from odoo.http import request, Response
 from odoo.exceptions import ValidationError, UserError
+from psycopg2.errors import UniqueViolation
 from odoo.addons.quicksol_estate.services.role_resolver import resolve_role
 from odoo.addons.thedevkitchen_apigateway.middleware import (
     require_jwt,
@@ -23,6 +24,17 @@ _GENERIC_TEMPLATE_LIST_LIMIT = 50
 GENERIC_TEMPLATE_MANAGEMENT_ROLES = TEMPLATE_MANAGEMENT_ROLES
 
 _COPY_NAME_MAX_ATTEMPTS = 100
+
+# PR #31 review: the search-then-create in _create_company_template_copy is
+# not atomic on its own — two concurrent copy requests can both see a name as
+# free before either commits. This bounds how many times we re-check +
+# re-attempt the create when we actually hit that race (UNIQUE(name,
+# company_id) violation on insert), as opposed to _COPY_NAME_MAX_ATTEMPTS,
+# which bounds how many *candidate names* _unique_company_template_name will
+# try within a single attempt. A real race is rare and self-resolving within
+# a couple of retries; this is not meant to survive sustained contention on
+# the exact same name.
+_COPY_CREATE_RETRY_ATTEMPTS = 3
 
 
 def _clamp_pagination_params(limit, offset):
@@ -92,6 +104,39 @@ def _build_copy_create_vals(generic, name, company_id):
         "company_id": company_id,
         "source_generic_template_id": generic.id,
     }
+
+
+def _create_company_template_copy(env, generic, base_name, company_id, source_content):
+    """Create the company-scoped copy of a generic template, closing the
+    check-then-create race on PR #31 review: if a concurrent request creates
+    the winning candidate name between our availability check
+    (_unique_company_template_name) and our INSERT, the UNIQUE(name,
+    company_id) constraint on thedevkitchen.cms.template raises
+    psycopg2.errors.UniqueViolation on create() — caught here specifically
+    (not swallowed as a generic 500) and retried with a freshly re-checked
+    name, up to _COPY_CREATE_RETRY_ATTEMPTS times. Each attempt runs inside
+    its own savepoint so a collision rolls back only that attempt.
+
+    Returns the new thedevkitchen.cms.template record, or None if no free
+    name could be found/created (caller returns 409 generic_copy_conflict)."""
+    Template = env["thedevkitchen.cms.template"].sudo()
+    Content = env["thedevkitchen.cms.template.content"].sudo()
+
+    for _attempt in range(_COPY_CREATE_RETRY_ATTEMPTS):
+        name = _unique_company_template_name(env, base_name, company_id)
+        if name is None:
+            return None
+
+        create_vals = _build_copy_create_vals(generic, name, company_id)
+        try:
+            with env.cr.savepoint():
+                new_template = Template.create(create_vals)
+                Content.create({"template_id": new_template.id, "content": source_content})
+            return new_template
+        except UniqueViolation:
+            continue  # a concurrent request won the race for `name` — re-check and retry
+
+    return None
 
 
 class CmsTemplateGenericController(http.Controller):
@@ -200,26 +245,26 @@ class CmsTemplateGenericController(http.Controller):
         if not isinstance(data, dict):
             return _cms_error(400, "validation_error", "Request body must be a JSON object")
 
-        company_id = request.env.company.id
-        requested_name = (data.get("name") or "").strip() or generic.name
-        name = _unique_company_template_name(request.env, requested_name, company_id)
-        if name is None:
-            return _cms_error(409, "generic_copy_conflict", "Could not find a free name for the copy")
+        raw_name = data.get("name")
+        if raw_name is not None and not isinstance(raw_name, str):
+            return _cms_error(400, "validation_error", "'name' must be a string")
 
+        company_id = request.env.company.id
+        requested_name = (raw_name or "").strip() or generic.name
         source_content = generic.content_ids[0].content if generic.content_ids else None
-        create_vals = _build_copy_create_vals(generic, name, company_id)
 
         try:
-            with request.env.cr.savepoint():
-                new_template = request.env["thedevkitchen.cms.template"].sudo().create(create_vals)
-                request.env["thedevkitchen.cms.template.content"].sudo().create(
-                    {"template_id": new_template.id, "content": source_content}
-                )
+            new_template = _create_company_template_copy(
+                request.env, generic, requested_name, company_id, source_content
+            )
         except (ValidationError, UserError) as exc:
             return _cms_error(422, "validation_error", str(exc.args[0]) if exc.args else "Validation failed")
         except Exception:
             _logger.exception("CMS copy_generic_template error")
             return _cms_error(500, "server_error", "An unexpected error occurred")
+
+        if new_template is None:
+            return _cms_error(409, "generic_copy_conflict", "Could not find a free name for the copy")
 
         payload = {
             "id": new_template.id,

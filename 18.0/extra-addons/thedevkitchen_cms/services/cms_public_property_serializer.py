@@ -34,9 +34,7 @@ def serialize_public_property(property_record, company_slug):
         "city": property_record.city or "",
         "neighborhood": property_record.neighborhood or "",
         "state": (
-            {"id": state.id, "name": state.name, "code": state.code}
-            if state
-            else None
+            {"id": state.id, "name": state.name, "code": state.code} if state else None
         ),
         "property_type": (
             {"id": property_type.id, "name": property_type.name}

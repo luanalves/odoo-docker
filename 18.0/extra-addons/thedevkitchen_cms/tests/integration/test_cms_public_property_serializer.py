@@ -5,10 +5,22 @@ Integration tests for cms_public_property_serializer.serialize_public_property.
 from odoo.tests.common import TransactionCase
 
 FORBIDDEN_KEYS = {
-    "owner", "owner_id", "agent", "agent_id", "internal_notes",
-    "commission_ids", "total_commission", "document_ids", "documents",
-    "street", "street_number", "complement", "zip_code",
-    "latitude", "longitude", "company",
+    "owner",
+    "owner_id",
+    "agent",
+    "agent_id",
+    "internal_notes",
+    "commission_ids",
+    "total_commission",
+    "document_ids",
+    "documents",
+    "street",
+    "street_number",
+    "complement",
+    "zip_code",
+    "latitude",
+    "longitude",
+    "company",
 }
 
 
@@ -20,6 +32,7 @@ class TestSerializePublicProperty(TransactionCase):
         from odoo.addons.thedevkitchen_cms.services.cms_public_property_serializer import (
             serialize_public_property,
         )
+
         cls.serialize_public_property = staticmethod(serialize_public_property)
 
         cls.company = cls.env["res.company"].create(
@@ -99,10 +112,26 @@ class TestSerializePublicProperty(TransactionCase):
     def test_expected_keys_present(self):
         payload = self.serialize_public_property(self.property_with_image, "it-slug")
         expected_keys = {
-            "id", "reference_code", "name", "property_status", "for_sale",
-            "for_rent", "price", "rent_price", "currency", "area", "num_rooms",
-            "num_bathrooms", "num_parking", "city", "neighborhood", "state",
-            "property_type", "image_url", "description_short", "create_date",
+            "id",
+            "reference_code",
+            "name",
+            "property_status",
+            "for_sale",
+            "for_rent",
+            "price",
+            "rent_price",
+            "currency",
+            "area",
+            "num_rooms",
+            "num_bathrooms",
+            "num_parking",
+            "city",
+            "neighborhood",
+            "state",
+            "property_type",
+            "image_url",
+            "description_short",
+            "create_date",
         }
         self.assertEqual(expected_keys, set(payload.keys()))
 

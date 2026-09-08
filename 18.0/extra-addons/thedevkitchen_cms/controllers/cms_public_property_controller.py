@@ -26,6 +26,7 @@ _logger = logging.getLogger(__name__)
 
 class CmsPublicPropertyController(http.Controller):
 
+    # public endpoint
     # JWT-authenticated endpoint — requires Bearer token from the frontend
     # application. auth='none' + @require_jwt enforces token validation at
     # the middleware level. Not unauthenticated: intended for
@@ -41,48 +42,51 @@ class CmsPublicPropertyController(http.Controller):
     )
     @require_jwt
     def list_public_properties(self, company_slug, **kwargs):
-        company_id = resolve_company_by_slug(request.env, company_slug)
-        if not company_id:
-            return _cms_error(404, "not_found", f"Company '{company_slug}' not found")
-
-        raw_status = kwargs.get("status")
-        status_values, status_ok = parse_status_filter(raw_status)
-        if not status_ok:
-            return _cms_error(
-                400,
-                "validation_error",
-                "Invalid status value(s)",
-                allowed=sorted(PUBLIC_PROPERTY_STATUSES),
-            )
-
-        raw_ids = kwargs.get("ids")
-        ids, ids_ok = parse_ids_filter(raw_ids)
-        if not ids_ok:
-            return _cms_error(
-                400,
-                "validation_error",
-                "ids must be a comma-separated list of integers",
-            )
-
-        raw_sort = kwargs.get("sort")
-        order, sort_ok = parse_sort(raw_sort)
-        if not sort_ok:
-            return _cms_error(
-                400, "validation_error", "sort must be 'newest' or 'oldest'"
-            )
-
-        raw_limit = kwargs.get("limit")
-        limit, limit_ok = parse_limit(raw_limit)
-        if not limit_ok:
-            return _cms_error(
-                400, "validation_error", "limit must be a positive integer"
-            )
-
         try:
+            company_id = resolve_company_by_slug(request.env, company_slug)
+            if not company_id:
+                return _cms_error(
+                    404, "not_found", f"Company '{company_slug}' not found"
+                )
+
+            raw_status = kwargs.get("status")
+            status_values, status_ok = parse_status_filter(raw_status)
+            if not status_ok:
+                return _cms_error(
+                    400,
+                    "validation_error",
+                    "Invalid status value(s)",
+                    allowed=sorted(PUBLIC_PROPERTY_STATUSES),
+                )
+
+            raw_ids = kwargs.get("ids")
+            ids, ids_ok = parse_ids_filter(raw_ids)
+            if not ids_ok:
+                return _cms_error(
+                    400,
+                    "validation_error",
+                    "ids must be a comma-separated list of integers",
+                )
+
+            raw_sort = kwargs.get("sort")
+            order, sort_ok = parse_sort(raw_sort)
+            if not sort_ok:
+                return _cms_error(
+                    400, "validation_error", "sort must be 'newest' or 'oldest'"
+                )
+
+            raw_limit = kwargs.get("limit")
+            limit, limit_ok = parse_limit(raw_limit)
+            if not limit_ok:
+                return _cms_error(
+                    400, "validation_error", "limit must be a positive integer"
+                )
+
             domain = build_public_property_domain(company_id, status_values, ids)
             properties = (
                 request.env["real.estate.property"]
                 .sudo()
+                .with_context(bin_size=True)
                 .search(domain, limit=limit, order=order)
             )
 
@@ -111,14 +115,15 @@ class CmsPublicPropertyController(http.Controller):
                 "data": data,
                 "_links": {"self": self_link},
             }
+
+            return Response(
+                json.dumps(payload), status=200, content_type="application/json"
+            )
         except Exception:
             _logger.exception("CMS list_public_properties unexpected error")
             return _cms_error(500, "internal_error", "An unexpected error occurred.")
 
-        return Response(
-            json.dumps(payload), status=200, content_type="application/json"
-        )
-
+    # public endpoint
     # Same auth model as list_public_properties — see comment above that
     # route. No Content-Disposition header: inline rendering for <img>
     # tags, unlike the authenticated attachment-download endpoint which
@@ -133,29 +138,31 @@ class CmsPublicPropertyController(http.Controller):
     )
     @require_jwt
     def get_public_property_image(self, company_slug, property_id, **kwargs):
-        company_id = resolve_company_by_slug(request.env, company_slug)
-        if not company_id:
-            return _cms_error(404, "not_found", "Image not found")
-
-        domain = build_public_property_domain(company_id) + [("id", "=", property_id)]
-
         try:
+            company_id = resolve_company_by_slug(request.env, company_slug)
+            if not company_id:
+                return _cms_error(404, "not_found", "Image not found")
+
+            domain = build_public_property_domain(company_id) + [
+                ("id", "=", property_id)
+            ]
+
             prop = request.env["real.estate.property"].sudo().search(domain, limit=1)
             if not prop or not prop.image:
                 return _cms_error(404, "not_found", "Image not found")
 
             content = base64.b64decode(prop.image)
             mimetype = magic.from_buffer(content[:2048], mime=True)
+
+            return Response(
+                content,
+                status=200,
+                headers={
+                    "Content-Type": mimetype,
+                    "Content-Security-Policy": "default-src 'none'",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
         except Exception:
             _logger.exception("CMS get_public_property_image unexpected error")
             return _cms_error(500, "internal_error", "An unexpected error occurred.")
-
-        return Response(
-            content,
-            status=200,
-            headers={
-                "Content-Type": mimetype,
-                "Content-Security-Policy": "default-src 'none'",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )

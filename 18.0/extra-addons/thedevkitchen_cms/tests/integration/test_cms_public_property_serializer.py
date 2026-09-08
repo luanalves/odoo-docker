@@ -147,3 +147,17 @@ class TestSerializePublicProperty(TransactionCase):
             payload["property_type"],
         )
         self.assertEqual(self.state.id, payload["state"]["id"])
+
+    def test_image_url_correct_under_bin_size_context(self):
+        """Regression test: the list endpoint fetches with bin_size=True to
+        avoid loading full image binaries for a truthiness check — image_url
+        must still be computed correctly under that context."""
+        prop_with_image = self.property_with_image.with_context(bin_size=True)
+        prop_no_image = self.property_no_image.with_context(bin_size=True)
+        payload_with_image = self.serialize_public_property(prop_with_image, "it-slug")
+        payload_no_image = self.serialize_public_property(prop_no_image, "it-slug")
+        self.assertEqual(
+            f"/api/v1/public/properties/it-slug/{self.property_with_image.id}/image",
+            payload_with_image["image_url"],
+        )
+        self.assertIsNone(payload_no_image["image_url"])

@@ -126,6 +126,22 @@ RESP=$(pub_req -X GET "$API_BASE/public/properties/$COMPANY_SLUG?ids=$PROP_AVAIL
 IDS_COUNT=$(python3 -c "import json; print(json.load(open('/tmp/us029_ids.json'))['count'])")
 [ "$IDS_COUNT" = "1" ] && _pass "Only the matching id is returned (nonexistent id silently dropped)" || _fail "ids filter count" "Expected 1, got $IDS_COUNT"
 
+# ---- S5b: ids filter, REAL cross-company property excluded (ADR-008 anti-enumeration) ----
+echo ""; echo "S5b: ids filter — real cross-company property id"
+CROSS_COMPANY_PROPERTY_ID=$(docker compose -f "$SCRIPT_DIR/../18.0/docker-compose.yml" exec -T db sh -c "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -At -c \"SELECT id FROM real_estate_property WHERE company_id != $COMPANY_ID AND active = true LIMIT 1;\"" 2>/dev/null || true)
+if [ -n "$CROSS_COMPANY_PROPERTY_ID" ]; then
+    RESP=$(pub_req -X GET "$API_BASE/public/properties/$COMPANY_SLUG?ids=$PROP_AVAILABLE,$CROSS_COMPANY_PROPERTY_ID" -o /tmp/us029_cross_company_ids.json -w "%{http_code}")
+    [ "$RESP" = "200" ] && _pass "cross-company ids filter returns 200" || _fail "cross-company ids filter" "Expected 200, got $RESP"
+    CROSS_IDS=$(python3 -c "import json; print([p['id'] for p in json.load(open('/tmp/us029_cross_company_ids.json'))['data']])")
+    if echo "$CROSS_IDS" | grep -q "$CROSS_COMPANY_PROPERTY_ID"; then
+        _fail "cross-company isolation" "Cross-company property $CROSS_COMPANY_PROPERTY_ID leaked into results via ids filter"
+    else
+        _pass "Real cross-company property silently excluded from ids filter results (anti-enumeration)"
+    fi
+else
+    echo "  [SKIP] No cross-company property found in dev DB to test against"
+fi
+
 # ---- S6: unknown company_slug → 404 ----
 echo ""; echo "S6: unknown company_slug → 404"
 RESP=$(pub_req -X GET "$API_BASE/public/properties/nonexistent-slug-$TS" -o /dev/null -w "%{http_code}")

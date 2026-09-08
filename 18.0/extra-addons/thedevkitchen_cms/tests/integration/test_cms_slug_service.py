@@ -12,6 +12,7 @@ class TestCmsSlugService(TransactionCase):
         from odoo.addons.thedevkitchen_cms.services.cms_slug_service import (
             resolve_company_by_slug,
         )
+
         self.resolve_company_by_slug = resolve_company_by_slug
 
         self.company = self.env["res.company"].create(

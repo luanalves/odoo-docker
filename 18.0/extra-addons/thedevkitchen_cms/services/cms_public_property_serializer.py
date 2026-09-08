@@ -48,7 +48,7 @@ def serialize_public_property(property_record, company_slug):
         ),
         "description_short": property_record.description_short or None,
         "create_date": (
-            property_record.create_date.isoformat()
+            property_record.create_date.isoformat() + "Z"
             if property_record.create_date
             else None
         ),

@@ -5,6 +5,7 @@ from odoo import http
 from odoo.http import request, Response
 from odoo.addons.thedevkitchen_apigateway.middleware import require_jwt
 from ..services.cms_error_helpers import _cms_error
+from ..services.cms_slug_service import resolve_company_by_slug
 
 _logger = logging.getLogger(__name__)
 
@@ -25,13 +26,14 @@ class CmsPublicController(http.Controller):
     @require_jwt
     def get_public_page(self, company_slug, page_slug, **kwargs):
         # 1. Resolve company from slug
-        settings = request.env["thedevkitchen.cms.settings"].sudo().search(
-            [("company_slug", "=", company_slug)], limit=1
-        )
-        if not settings:
+        company_id = resolve_company_by_slug(request.env, company_slug)
+        if not company_id:
             return _cms_error(404, "not_found", f"Company '{company_slug}' not found")
 
-        company_id = settings.company_id.id
+        # Fetch settings for OG defaults
+        settings = request.env["thedevkitchen.cms.settings"].sudo().search(
+            [("company_id", "=", company_id)], limit=1
+        )
 
         # 2. Fetch published, active page
         page = request.env["thedevkitchen.cms.page"].sudo().search(

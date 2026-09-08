@@ -11,3 +11,6 @@ from .integration import test_cms_template_generic_crud
 # PR #31 review fix: copy_generic_template's name-allocation race (real
 # UNIQUE constraint, not simulated) — see the module docstring for context.
 from .integration import test_cms_template_generic_copy_race
+
+# Feature 029: shared company-slug resolution helper
+from .integration import test_cms_slug_service

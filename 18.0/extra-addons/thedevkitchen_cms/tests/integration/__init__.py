@@ -9,3 +9,4 @@ Execution: docker compose -f 18.0/docker-compose.yml exec odoo \
 """
 from . import test_cms_template_generic_crud
 from . import test_cms_template_generic_copy_race
+from . import test_cms_slug_service

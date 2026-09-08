@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
+import base64
 import json
 import logging
+
+import magic
 
 from odoo import http
 from odoo.http import request, Response
@@ -114,4 +117,40 @@ class CmsPublicPropertyController(http.Controller):
 
         return Response(
             json.dumps(payload), status=200, content_type="application/json"
+        )
+
+    # Same auth model as list_public_properties — see comment above that
+    # route. No Content-Disposition header: inline rendering for <img>
+    # tags, unlike the authenticated attachment-download endpoint which
+    # forces `attachment;` disposition (property_attachments_controller.py).
+    @http.route(
+        "/api/v1/public/properties/<string:company_slug>/<int:property_id>/image",
+        type="http",
+        auth="none",
+        methods=["GET"],
+        csrf=False,
+        cors="*",
+    )
+    @require_jwt
+    def get_public_property_image(self, company_slug, property_id, **kwargs):
+        company_id = resolve_company_by_slug(request.env, company_slug)
+        if not company_id:
+            return _cms_error(404, "not_found", "Image not found")
+
+        domain = build_public_property_domain(company_id) + [("id", "=", property_id)]
+        prop = request.env["real.estate.property"].sudo().search(domain, limit=1)
+        if not prop or not prop.image:
+            return _cms_error(404, "not_found", "Image not found")
+
+        content = base64.b64decode(prop.image)
+        mimetype = magic.from_buffer(content[:2048], mime=True)
+
+        return Response(
+            content,
+            status=200,
+            headers={
+                "Content-Type": mimetype,
+                "Content-Security-Policy": "default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+            },
         )

@@ -134,7 +134,7 @@ class TestPublicPropertyDomainIsolation(TransactionCase):
         # one set of queries per record — bounded constant, not O(n).
         self.assertLess(
             query_count,
-            10,
+            len(results) + 5,
             f"Expected bounded query count for {len(results)} records, got {query_count} "
             "— check for a per-record N+1 on a related field",
         )

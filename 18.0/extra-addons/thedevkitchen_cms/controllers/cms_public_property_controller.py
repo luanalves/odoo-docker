@@ -138,12 +138,17 @@ class CmsPublicPropertyController(http.Controller):
             return _cms_error(404, "not_found", "Image not found")
 
         domain = build_public_property_domain(company_id) + [("id", "=", property_id)]
-        prop = request.env["real.estate.property"].sudo().search(domain, limit=1)
-        if not prop or not prop.image:
-            return _cms_error(404, "not_found", "Image not found")
 
-        content = base64.b64decode(prop.image)
-        mimetype = magic.from_buffer(content[:2048], mime=True)
+        try:
+            prop = request.env["real.estate.property"].sudo().search(domain, limit=1)
+            if not prop or not prop.image:
+                return _cms_error(404, "not_found", "Image not found")
+
+            content = base64.b64decode(prop.image)
+            mimetype = magic.from_buffer(content[:2048], mime=True)
+        except Exception:
+            _logger.exception("CMS get_public_property_image unexpected error")
+            return _cms_error(500, "internal_error", "An unexpected error occurred.")
 
         return Response(
             content,

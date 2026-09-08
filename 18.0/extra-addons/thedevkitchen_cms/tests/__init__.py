@@ -14,3 +14,6 @@ from .integration import test_cms_template_generic_copy_race
 
 # Feature 029: shared company-slug resolution helper
 from .integration import test_cms_slug_service
+
+# Feature 029: PII-free public property serializer
+from .integration import test_cms_public_property_serializer

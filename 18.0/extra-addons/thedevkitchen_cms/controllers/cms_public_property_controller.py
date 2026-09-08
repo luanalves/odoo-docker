@@ -75,36 +75,43 @@ class CmsPublicPropertyController(http.Controller):
                 400, "validation_error", "limit must be a positive integer"
             )
 
-        domain = build_public_property_domain(company_id, status_values, ids)
-        properties = (
-            request.env["real.estate.property"]
-            .sudo()
-            .search(domain, limit=limit, order=order)
-        )
+        try:
+            domain = build_public_property_domain(company_id, status_values, ids)
+            properties = (
+                request.env["real.estate.property"]
+                .sudo()
+                .search(domain, limit=limit, order=order)
+            )
 
-        data = [serialize_public_property(prop, company_slug) for prop in properties]
+            data = [
+                serialize_public_property(prop, company_slug) for prop in properties
+            ]
 
-        self_link = (
-            f"/api/v1/public/properties/{company_slug}"
-            f"?sort={raw_sort or 'newest'}&limit={limit}"
-        )
-        if raw_status:
-            self_link += f"&status={raw_status}"
-        if raw_ids:
-            self_link += f"&ids={raw_ids}"
+            self_link = (
+                f"/api/v1/public/properties/{company_slug}"
+                f"?sort={raw_sort or 'newest'}&limit={limit}"
+            )
+            if raw_status:
+                self_link += f"&status={raw_status}"
+            if raw_ids:
+                self_link += f"&ids={raw_ids}"
 
-        payload = {
-            "company_slug": company_slug,
-            "count": len(data),
-            "limit": limit,
-            "filters": {
-                "status": status_values,
-                "ids": ids,
-                "sort": raw_sort or "newest",
-            },
-            "data": data,
-            "_links": {"self": self_link},
-        }
+            payload = {
+                "company_slug": company_slug,
+                "count": len(data),
+                "limit": limit,
+                "filters": {
+                    "status": status_values,
+                    "ids": ids,
+                    "sort": raw_sort or "newest",
+                },
+                "data": data,
+                "_links": {"self": self_link},
+            }
+        except Exception:
+            _logger.exception("CMS list_public_properties unexpected error")
+            return _cms_error(500, "internal_error", "An unexpected error occurred.")
+
         return Response(
             json.dumps(payload), status=200, content_type="application/json"
         )

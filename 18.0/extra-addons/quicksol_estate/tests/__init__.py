@@ -50,5 +50,8 @@ from .integration import test_sale_serializer_agent_link
 # with list_profiles for deactivated profiles
 from .integration import test_get_profile_active_test
 
+# Feature 029: composite index for the public property listing hot path
+from .integration import test_property_public_listing_index
+
 # Observer pattern tests
 from . import observers

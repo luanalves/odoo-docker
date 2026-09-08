@@ -61,3 +61,6 @@ from . import test_sale_serializer_agent_link
 # Feature 027 bugfix: GET /api/v1/profiles/<id> active_test=False parity
 # with list_profiles for deactivated profiles
 from . import test_get_profile_active_test
+
+# Feature 029: composite index for the public property listing hot path
+from . import test_property_public_listing_index

@@ -30,6 +30,7 @@ const CMS_PAGES     = '/web#action=thedevkitchen_cms.action_cms_pages&model=thed
 const CMS_TEMPLATES = '/web#action=thedevkitchen_cms.action_cms_templates&model=thedevkitchen.cms.template&view_type=list';
 const CMS_MEDIA     = '/web#action=thedevkitchen_cms.action_cms_media&model=thedevkitchen.cms.media&view_type=list';
 const CMS_SETTINGS  = '/web#action=thedevkitchen_cms.action_cms_settings&model=thedevkitchen.cms.settings&view_type=form';
+const CMS_TEMPLATES_GENERIC = '/web#action=thedevkitchen_cms.action_cms_templates_generic&model=thedevkitchen.cms.template.generic&view_type=list';
 
 describe('CMS Admin UI — Odoo Views', () => {
 
@@ -89,6 +90,38 @@ describe('CMS Admin UI — Odoo Views', () => {
     cy.get('body').should('not.contain.text', 'Oops!');
   });
 
+  it('S4b: Generic Templates list view loads without error', () => {
+    cy.visit(CMS_TEMPLATES_GENERIC);
+    cy.get('.o_list_view', { timeout: 15000 }).should('exist');
+    cy.get('body').should('not.contain.text', 'Missing Action');
+    cy.get('body').should('not.contain.text', 'Oops!');
+    cy.screenshot('028-cms-generic-templates/S4b-generic-templates-list', { capture: 'viewport' });
+  });
+
+  it('S4c: Generic Templates form saves a new record', () => {
+    // thedevkitchen.cms.template.generic has a UNIQUE(name) SQL constraint,
+    // so a fixed literal name would only pass on the first run against a
+    // given database. Use a per-run unique name instead.
+    const uniqueName = `cypress_generic_${Date.now()}`;
+    cy.visit(CMS_TEMPLATES_GENERIC);
+    cy.get('.o_list_view', { timeout: 15000 }).should('exist');
+    cy.get('.o_list_button_add, button:contains("New")').first().click();
+    cy.get('.o_form_view', { timeout: 10000 }).should('exist');
+    cy.get('h1 input, h1 [name="name"] input').first().type(uniqueName);
+    // Odoo's OWL selection widget JSON-encodes option values (e.g. value='"landing"'),
+    // so select by the visible option text ("Landing Page") rather than the raw value.
+    cy.get('[name="category"] select, [name="category"] input').first().select('Landing Page', { force: true });
+    cy.get('.o_form_button_save, button[title="Save"]').first().click();
+    cy.get('body').should('not.contain.text', 'Oops!');
+    // Prove the record actually persisted (a unique-constraint violation would
+    // leave the form dirty/editable with no saved record) rather than only
+    // checking for an unrelated string that Odoo 18's error dialog never uses.
+    cy.wait(1500);
+    cy.get('.o_form_view:not(.o_form_editable), .o_form_view.o_form_readonly', { timeout: 10000 }).should('exist');
+    cy.contains(uniqueName, { timeout: 5000 }).should('be.visible');
+    cy.screenshot('028-cms-generic-templates/S4c-generic-template-saved', { capture: 'viewport' });
+  });
+
   it('S5: Settings form shows company_slug and custom code section', () => {
     cy.visit(CMS_SETTINGS);
     cy.get('.o_form_view', { timeout: 15000 }).should('exist');
@@ -97,7 +130,7 @@ describe('CMS Admin UI — Odoo Views', () => {
   });
 
   it('S6: Zero Missing-Action errors during full CMS navigation', () => {
-    const urls = [CMS_PAGES, CMS_TEMPLATES, CMS_MEDIA, CMS_SETTINGS];
+    const urls = [CMS_PAGES, CMS_TEMPLATES, CMS_TEMPLATES_GENERIC, CMS_MEDIA, CMS_SETTINGS];
 
     urls.forEach((url) => {
       cy.visit(url);

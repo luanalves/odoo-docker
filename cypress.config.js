@@ -46,6 +46,36 @@ module.exports = {
     trashAssetsBeforeRuns: false,
     setupNodeEvents(on, config) {
       // env is already injected above from 18.0/.env
+
+      // Evidence organization convention: cy.screenshot('<spec-folder-name>/<label>')
+      // (e.g. cy.screenshot('028-cms-generic-templates/S4b-list')) should land at
+      // cypress/screenshots/<spec-folder-name>/<label>.png — matching the feature's
+      // specs/NNN-feature-name/ directory — instead of Cypress's default nesting
+      // under the originating spec *file*'s own folder (cypress/screenshots/<spec
+      // file>.cy.js/<spec-folder-name>/<label>.png). This keeps all evidence for a
+      // feature (screenshots, videos, API logs) addressable from one place.
+      on('after:screenshot', (details) => {
+        if (!details.name || !details.name.includes('/')) return;
+        const screenshotsFolder = config.screenshotsFolder || 'cypress/screenshots';
+        const newPath = path.join(screenshotsFolder, `${details.name}.png`);
+        if (path.resolve(newPath) === path.resolve(details.path)) return;
+        fs.mkdirSync(path.dirname(newPath), { recursive: true });
+        fs.renameSync(details.path, newPath);
+        // Cypress pre-creates the default per-spec-file folder before this hook
+        // runs; walk back up from the original location removing now-empty
+        // directories so no stray `<spec>.cy.js/` tree is left behind.
+        let dir = path.dirname(details.path);
+        while (dir !== screenshotsFolder && dir.startsWith(screenshotsFolder)) {
+          try {
+            fs.rmdirSync(dir);
+          } catch (e) {
+            break; // not empty (other screenshots still there) — stop climbing
+          }
+          dir = path.dirname(dir);
+        }
+        return { path: newPath };
+      });
+
       return config;
     },
   },

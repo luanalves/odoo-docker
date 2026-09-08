@@ -9,50 +9,30 @@ Tests (using unittest.mock — no Odoo environment required):
 - CSS injection detected emits cms.css_injection_blocked with company_id + field
   BEFORE the ValueError is raised (ordering guarantee)
 """
-import sys
-import types
+import importlib
+import pathlib
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 from datetime import datetime
 
-
 # ---------------------------------------------------------------------------
-# Minimal stubs so we can import the service modules without a running Odoo
-# ---------------------------------------------------------------------------
+# The service modules under test (services/cms_page_service.py etc.) are
+# plain Python — they don't import `odoo` at module scope, only a deferred
+# `from odoo.addons.thedevkitchen_observability.services.tracer import
+# add_span_event` inside their own _emit() function, at call time. Since
+# these tests always run inside the real Odoo container (via
+# tests/run_unit_tests.py), that target module genuinely exists — so each
+# TestCase below patches its `add_span_event` attribute directly with
+# unittest.mock.patch() rather than trying to inject a fake replacement
+# module into sys.modules. Patching the real module's attribute is immune to
+# import ordering: it works identically whether some other test file
+# (imported earlier during unittest's discovery) already triggered a
+# genuine import of this module or not — unlike a sys.modules injection,
+# which can only ever apply if the real module hasn't been imported by
+# anyone yet, and previously caused this file to leak an incomplete fake
+# (missing trace_http_request) into every test file discovered afterward.
+_TRACER_ADD_SPAN_EVENT = "odoo.addons.thedevkitchen_observability.services.tracer.add_span_event"
 
-def _stub_odoo():
-    """Inject minimal odoo stubs into sys.modules."""
-    odoo = types.ModuleType("odoo")
-    odoo.api = types.ModuleType("odoo.api")
-    odoo.fields = types.ModuleType("odoo.fields")
-    odoo.models = types.ModuleType("odoo.models")
-    sys.modules.setdefault("odoo", odoo)
-    sys.modules.setdefault("odoo.api", odoo.api)
-    sys.modules.setdefault("odoo.fields", odoo.fields)
-    sys.modules.setdefault("odoo.models", odoo.models)
-
-    # Stub out the observability tracer so _emit() can be patched
-    obs = types.ModuleType("odoo.addons")
-    obs_tk = types.ModuleType("odoo.addons.thedevkitchen_observability")
-    obs_svc = types.ModuleType("odoo.addons.thedevkitchen_observability.services")
-    obs_tracer = types.ModuleType("odoo.addons.thedevkitchen_observability.services.tracer")
-    obs_tracer.add_span_event = MagicMock()
-    sys.modules.setdefault("odoo.addons", obs)
-    sys.modules.setdefault("odoo.addons.thedevkitchen_observability", obs_tk)
-    sys.modules.setdefault("odoo.addons.thedevkitchen_observability.services", obs_svc)
-    sys.modules.setdefault(
-        "odoo.addons.thedevkitchen_observability.services.tracer", obs_tracer
-    )
-    return obs_tracer
-
-
-_tracer_stub = _stub_odoo()
-
-
-# ---------------------------------------------------------------------------
-# Import services under test after stubs are in place
-# ---------------------------------------------------------------------------
-import importlib, pathlib, sys as _sys
 
 def _load(rel_path):
     """Load a module from an absolute path without Odoo's module finder."""
@@ -86,8 +66,10 @@ def _make_page(page_id=1, slug="test-page", status="draft", published_at=None, c
 class TestChangeStatusEvents(unittest.TestCase):
     def setUp(self):
         """Reload the service module fresh so _emit is clean."""
+        patcher = patch(_TRACER_ADD_SPAN_EVENT, new=MagicMock())
+        self.mock_add_span_event = patcher.start()
+        self.addCleanup(patcher.stop)
         self.svc_mod = _load("services/cms_page_service.py")
-        _tracer_stub.add_span_event.reset_mock()
 
     def _make_env(self, page):
         env = MagicMock()
@@ -110,7 +92,7 @@ class TestChangeStatusEvents(unittest.TestCase):
 
         self.svc_mod.CmsPageService.change_status(env, 1, "pending_review", 10)
 
-        calls = [c for c in _tracer_stub.add_span_event.call_args_list
+        calls = [c for c in self.mock_add_span_event.call_args_list
                  if c[0][0] == "cms.page.status_changed"]
         self.assertEqual(len(calls), 1, "cms.page.status_changed should be emitted once")
 
@@ -131,11 +113,11 @@ class TestChangeStatusEvents(unittest.TestCase):
 
         self.svc_mod.CmsPageService.change_status(env, 1, "published", 10)
 
-        events = [c[0][0] for c in _tracer_stub.add_span_event.call_args_list]
+        events = [c[0][0] for c in self.mock_add_span_event.call_args_list]
         self.assertIn("cms.page.status_changed", events)
         self.assertIn("cms.page.published", events)
 
-        pub_call = next(c for c in _tracer_stub.add_span_event.call_args_list
+        pub_call = next(c for c in self.mock_add_span_event.call_args_list
                         if c[0][0] == "cms.page.published")
         attrs = pub_call[0][1]
         self.assertIn("published_at", attrs)
@@ -148,7 +130,7 @@ class TestChangeStatusEvents(unittest.TestCase):
 
         self.svc_mod.CmsPageService.change_status(env, 1, "pending_review", 10)
 
-        events = [c[0][0] for c in _tracer_stub.add_span_event.call_args_list]
+        events = [c[0][0] for c in self.mock_add_span_event.call_args_list]
         self.assertNotIn("cms.page.published", events)
 
     def test_pages_by_status_gauge_emitted(self):
@@ -158,7 +140,7 @@ class TestChangeStatusEvents(unittest.TestCase):
 
         self.svc_mod.CmsPageService.change_status(env, 1, "pending_review", 10)
 
-        events = [c[0][0] for c in _tracer_stub.add_span_event.call_args_list]
+        events = [c[0][0] for c in self.mock_add_span_event.call_args_list]
         self.assertIn("cms.pages_by_status", events)
 
     def test_invalid_transition_does_not_emit(self):
@@ -170,7 +152,7 @@ class TestChangeStatusEvents(unittest.TestCase):
             self.svc_mod.CmsPageService.change_status(env, 1, "draft", 10)
 
         self.assertIn("invalid_status_transition", str(ctx.exception))
-        events = [c[0][0] for c in _tracer_stub.add_span_event.call_args_list]
+        events = [c[0][0] for c in self.mock_add_span_event.call_args_list]
         self.assertNotIn("cms.page.status_changed", events)
 
 
@@ -180,7 +162,9 @@ class TestChangeStatusEvents(unittest.TestCase):
 
 class TestMediaUploadCounter(unittest.TestCase):
     def setUp(self):
-        _tracer_stub.add_span_event.reset_mock()
+        patcher = patch(_TRACER_ADD_SPAN_EVENT, new=MagicMock())
+        self.mock_add_span_event = patcher.start()
+        self.addCleanup(patcher.stop)
         self.media_mod = _load("services/cms_media_service.py")
 
     def _make_env(self, media_id=99):
@@ -212,7 +196,7 @@ class TestMediaUploadCounter(unittest.TestCase):
         ):
             self.media_mod.CmsMediaService.upload(env, fake_jpeg, "test.jpg", "image/jpeg", 10)
 
-        calls = [c for c in _tracer_stub.add_span_event.call_args_list
+        calls = [c for c in self.mock_add_span_event.call_args_list
                  if c[0][0] == "cms_media_uploads_total"]
         self.assertEqual(len(calls), 1, "cms_media_uploads_total should be emitted once")
 
@@ -234,7 +218,7 @@ class TestMediaUploadCounter(unittest.TestCase):
                     env, b"garbage", "file.bin", "application/octet-stream", 10
                 )
 
-        calls = [c for c in _tracer_stub.add_span_event.call_args_list
+        calls = [c for c in self.mock_add_span_event.call_args_list
                  if c[0][0] == "cms_media_uploads_total"]
         self.assertEqual(len(calls), 0)
 
@@ -247,7 +231,9 @@ class TestCssInjectionEventOrdering(unittest.TestCase):
     """Verify that cms.css_injection_blocked is emitted BEFORE ValueError is raised."""
 
     def setUp(self):
-        _tracer_stub.add_span_event.reset_mock()
+        patcher = patch(_TRACER_ADD_SPAN_EVENT, new=MagicMock())
+        self.mock_add_span_event = patcher.start()
+        self.addCleanup(patcher.stop)
         self.settings_mod = _load("services/cms_settings_service.py")
 
     def _make_env(self, company_id=10):
@@ -280,7 +266,7 @@ class TestCssInjectionEventOrdering(unittest.TestCase):
         def track_emit(name, attrs=None):
             emitted_before_raise.append(name)
 
-        _tracer_stub.add_span_event.side_effect = track_emit
+        self.mock_add_span_event.side_effect = track_emit
 
         with self.assertRaises(ValueError) as ctx:
             self.settings_mod.CmsSettingsService.update_settings(

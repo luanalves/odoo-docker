@@ -29,6 +29,14 @@
         />
 
         <menuitem
+            id="menu_cms_templates_generic"
+            name="Generic Templates"
+            parent="menu_cms_root"
+            action="action_cms_templates_generic"
+            sequence="25"
+        />
+
+        <menuitem
             id="menu_cms_media"
             name="Media"
             parent="menu_cms_root"

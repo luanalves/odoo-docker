@@ -553,6 +553,152 @@
         </record>
 
         <!-- ======================================================== -->
+        <!-- CMS GENERIC TEMPLATES (3 endpoints) — Feature 028         -->
+        <!-- ======================================================== -->
+
+        <record id="api_endpoint_cms_templates_generic_list" model="thedevkitchen.api.endpoint">
+            <field name="name">List Generic Templates</field>
+            <field name="path">/api/v1/cms/templates/generic</field>
+            <field name="method">GET</field>
+            <field name="module_name">thedevkitchen_cms</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">CMS Generic Templates</field>
+            <field name="summary">List active platform-level generic templates</field>
+            <field name="description">Returns active, platform-wide generic templates — a curated catalog managed exclusively by the Odoo system admin via the backend UI (no REST create/update/delete exists for this catalog; ADR-029 blocks `base.group_system` from REST auth). This is the same role set that manages the company-scoped "CMS Templates" above. Content is NOT included — fetch an individual generic template for that.
+
+**Required Roles:** owner, director, manager (all other roles get 403, including agent)
+
+**Query Parameters:**
+- `category` (string, optional): Filter by category (`landing`, `property`, `about`)
+- `limit` (int, optional): Max results. Default: 50, hard-capped at 50
+- `offset` (int, optional): Pagination offset. Default: 0
+
+**Error Responses:**
+- **400 Bad Request**: Invalid pagination parameters (e.g. `limit` &lt;= 0)
+- **401 Unauthorized**: Missing or invalid JWT
+- **403 Forbidden**: Role outside owner/director/manager
+</field>
+            <field name="response_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "GenericTemplateListResponse",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "title": "GenericTemplateSummary",
+        "properties": {
+          "id": {"type": "integer", "example": 46},
+          "name": {"type": "string", "example": "seed_generic_landing"},
+          "category": {"type": "string", "enum": ["landing", "property", "about"]},
+          "active": {"type": "boolean"},
+          "created_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "total": {"type": "integer"},
+    "limit": {"type": "integer"},
+    "offset": {"type": "integer"}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_cms_templates_generic_get" model="thedevkitchen.api.endpoint">
+            <field name="name">Get Generic Template</field>
+            <field name="path">/api/v1/cms/templates/generic/{id}</field>
+            <field name="method">GET</field>
+            <field name="module_name">thedevkitchen_cms</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">CMS Generic Templates</field>
+            <field name="summary">Get a single generic template including its content</field>
+            <field name="description">Returns full generic template data including the Puck JSON content, to allow preview before copying it into your own company's template catalog.
+
+**Required Roles:** owner, director, manager
+
+**Path Parameters:**
+- `id` (integer): Generic template ID
+
+**Error Responses:**
+- **401 Unauthorized**: Missing or invalid JWT
+- **403 Forbidden**: Role outside owner/director/manager
+- **404 Not Found**: Generic template does not exist, or is inactive (soft-deleted — inactive generic templates are never exposed via the API, only visible/reactivatable by the admin via the Odoo backend UI)
+</field>
+            <field name="response_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "GenericTemplateResponse",
+  "properties": {
+    "id": {"type": "integer", "example": 46},
+    "name": {"type": "string", "example": "seed_generic_landing"},
+    "category": {"type": "string", "enum": ["landing", "property", "about"]},
+    "active": {"type": "boolean"},
+    "content": {"type": "string", "description": "Puck JSON content"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_cms_templates_generic_copy" model="thedevkitchen.api.endpoint">
+            <field name="name">Copy Generic Template</field>
+            <field name="path">/api/v1/cms/templates/generic/{id}/copy</field>
+            <field name="method">POST</field>
+            <field name="module_name">thedevkitchen_cms</field>
+            <field name="protected" eval="True"/>
+            <field name="tags">CMS Generic Templates</field>
+            <field name="summary">Copy a generic template into the caller's own company</field>
+            <field name="description">Creates a new company-scoped "CMS Template" (see the "CMS Templates" tag above) by copying the generic template's category and content. `company_id` is always derived from the authenticated session (`@require_company`) — it is never read from the request body, even if present. The new template records `source_generic_template_id` for traceability; the copy is an independent snapshot and is never affected by later changes to (or deactivation of) the generic source.
+
+**Required Roles:** owner, director, manager
+
+**Path Parameters:**
+- `id` (integer): Generic template ID to copy from
+
+**Name Conflict Handling:** `name` is optional (defaults to the generic template's own name). On a name conflict within the target company, an incrementing `" (2)"`, `" (3)"`... suffix is applied automatically, up to 100 attempts.
+
+**Error Responses:**
+- **400 Bad Request**: Request body is not a JSON object
+- **401 Unauthorized**: Missing or invalid JWT
+- **403 Forbidden**: Role outside owner/director/manager
+- **404 Not Found**: Generic template does not exist or is inactive
+- **409 Conflict** (`generic_copy_conflict`): No free name found after 100 suffix attempts
+</field>
+            <field name="request_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "CopyGenericTemplateRequest",
+  "properties": {
+    "name": {"type": "string", "example": "Landing Padrão (Minha Imobiliária)", "description": "Optional — defaults to the generic template's own name"}
+  }
+}
+]]></field>
+            <field name="response_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "GenericTemplateCopyResponse",
+  "properties": {
+    "id": {"type": "integer", "example": 43, "description": "New company-scoped CMS Template id"},
+    "name": {"type": "string", "example": "seed_generic_landing (2)"},
+    "category": {"type": "string", "enum": ["landing", "property", "about"]},
+    "active": {"type": "boolean"},
+    "company_id": {"type": "integer", "example": 5},
+    "source_generic_template_id": {"type": "integer", "example": 46},
+    "content": {"type": "string", "description": "Puck JSON content, copied from the generic template"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- ======================================================== -->
         <!-- CMS SETTINGS (2 endpoints)                               -->
         <!-- ======================================================== -->
 

@@ -15,7 +15,7 @@ class TestCmsSlugService(TransactionCase):
         self.resolve_company_by_slug = resolve_company_by_slug
 
         self.company = self.env["res.company"].create(
-            {"name": "Slug Service Test Co", "cnpj": "44.444.444/0001-53"}
+            {"name": "Slug Service Test Co", "cnpj": "44.444.444/0001-91"}
         )
         self.env["thedevkitchen.cms.settings"].create(
             {"company_id": self.company.id, "company_slug": "it-slug-service-co"}

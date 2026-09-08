@@ -443,7 +443,7 @@ class TestSerializePublicProperty(TransactionCase):
         cls.serialize_public_property = staticmethod(serialize_public_property)
 
         cls.company = cls.env["res.company"].create(
-            {"name": "Serializer Test Co", "cnpj": "55.555.555/0001-77"}
+            {"name": "Serializer Test Co", "cnpj": "55.555.555/0001-91"}
         )
         cls.property_type = cls.env["real.estate.property.type"].create(
             {"name": "it_serializer_house"}
@@ -672,7 +672,7 @@ class TestPublicPropertyDomainIsolation(TransactionCase):
         cls.build_public_property_domain = staticmethod(build_public_property_domain)
 
         cls.company_a = cls.env["res.company"].create(
-            {"name": "Domain Test Co A", "cnpj": "66.666.666/0001-01"}
+            {"name": "Domain Test Co A", "cnpj": "66.666.666/0001-91"}
         )
         cls.company_b = cls.env["res.company"].create(
             {"name": "Domain Test Co B", "cnpj": "98.765.432/0001-98"}
@@ -1345,7 +1345,12 @@ Expected: `thedevkitchen_cms` and `quicksol_estate` both show unit + integration
 ```bash
 docker compose -f 18.0/docker-compose.yml exec odoo black --check /mnt/extra-addons/thedevkitchen_cms /mnt/extra-addons/quicksol_estate
 docker compose -f 18.0/docker-compose.yml exec odoo isort --check-only /mnt/extra-addons/thedevkitchen_cms /mnt/extra-addons/quicksol_estate
-docker compose -f 18.0/docker-compose.yml exec odoo flake8 /mnt/extra-addons/thedevkitchen_cms/controllers/cms_public_property_controller.py /mnt/extra-addons/thedevkitchen_cms/services/cms_slug_service.py /mnt/extra-addons/thedevkitchen_cms/services/cms_public_property_service.py /mnt/extra-addons/thedevkitchen_cms/services/cms_public_property_serializer.py
+docker compose -f 18.0/docker-compose.yml exec odoo flake8 --max-line-length=88 --extend-ignore=E203,E501,W503,E402 /mnt/extra-addons/thedevkitchen_cms/controllers/cms_public_property_controller.py /mnt/extra-addons/thedevkitchen_cms/services/cms_slug_service.py /mnt/extra-addons/thedevkitchen_cms/services/cms_public_property_service.py /mnt/extra-addons/thedevkitchen_cms/services/cms_public_property_serializer.py
+# NOTE: 18.0/.flake8 is NOT bind-mounted into the odoo container (only
+# extra-addons/ is), so a bare `flake8` call silently falls back to
+# pyflakes defaults (79-char lines) instead of this repo's real 88-char
+# config -- always pass these flags explicitly, matching CLAUDE.md's
+# documented config (max line length 88, E203/E501/W503/E402 ignored).
 docker compose -f 18.0/docker-compose.yml exec odoo pylint --fail-under=8.0 /mnt/extra-addons/thedevkitchen_cms/controllers/cms_public_property_controller.py /mnt/extra-addons/thedevkitchen_cms/services/cms_slug_service.py /mnt/extra-addons/thedevkitchen_cms/services/cms_public_property_service.py /mnt/extra-addons/thedevkitchen_cms/services/cms_public_property_serializer.py
 ```
 Expected: no errors, pylint score >= 8.0 (per NFR3). Fix formatting with `black`/`isort` (no `--check`) if needed and re-run.

@@ -488,6 +488,20 @@ class Property(models.Model):
                     )
         return result
 
+    def init(self):
+        """Create database indexes for common search queries"""
+        super(Property, self).init()
+
+        # Composite index for the public property listing hot path
+        # (Feature 029): every public request filters by
+        # company_id + publish_website + active and sorts by create_date.
+        self._cr.execute(
+            """
+            CREATE INDEX IF NOT EXISTS real_estate_property_public_listing_idx
+            ON real_estate_property (company_id, publish_website, active, create_date)
+        """
+        )
+
     # ========== COMPUTED FIELDS ==========
     @api.depends(
         "street",

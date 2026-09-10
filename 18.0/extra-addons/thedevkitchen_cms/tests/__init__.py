@@ -11,3 +11,17 @@ from .integration import test_cms_template_generic_crud
 # PR #31 review fix: copy_generic_template's name-allocation race (real
 # UNIQUE constraint, not simulated) — see the module docstring for context.
 from .integration import test_cms_template_generic_copy_race
+
+# Feature 029: shared company-slug resolution helper
+from .integration import test_cms_slug_service
+
+# Feature 029: PII-free public property serializer
+from .integration import test_cms_public_property_serializer
+
+# Feature 029: domain builder correctness against a real DB (multi-tenancy +
+# publish_website/active visibility gates) and serializer N+1 query count
+from .integration import test_cms_public_property_domain
+
+# Feature 029: image endpoint 200/byte-streaming success path (previously
+# only 404 paths were covered anywhere in the test suite)
+from .integration import test_cms_public_property_image_endpoint

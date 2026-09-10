@@ -782,5 +782,146 @@
             <field name="active" eval="True"/>
         </record>
 
+        <!-- ======================================================== -->
+        <!-- PUBLIC PROPERTY LISTING (Feature 029, 2 endpoints)       -->
+        <!-- ======================================================== -->
+
+        <record id="api_endpoint_cms_public_properties_list" model="thedevkitchen.api.endpoint">
+            <field name="name">List Public Properties</field>
+            <field name="path">/api/v1/public/properties/{company_slug}</field>
+            <field name="method">GET</field>
+            <field name="module_name">thedevkitchen_cms</field>
+            <field name="protected" eval="False"/>
+            <field name="tags">CMS Public</field>
+            <field name="summary">List a company's published properties by CMS company slug (PII-free)</field>
+            <field name="description">Public endpoint returning the published property inventory for a company, resolved from `company_slug`. Intended for a marketing/listing frontend (SSR or client-side).
+
+**Authentication:** JWT only (`Authorization: Bearer {access_token}`) — no session, no company header.
+
+**Path Parameters:**
+- `company_slug` (string): Unique slug configured in CMS Settings
+
+**Query Parameters:**
+- `status` (string, optional): Comma-separated list of `available`, `rented`, `sold`, `reserved`. Any unrecognized value returns 400.
+- `ids` (string, optional): Comma-separated list of property ids to filter by. Ids that don't exist or don't belong to the resolved company are silently dropped (no error).
+- `sort` (string, optional): `newest` (default) or `oldest`, ordered by `create_date`.
+- `limit` (integer, optional): Default 20, hard-clamped to a maximum of 100.
+
+**Visibility Gate:** Only properties with `active=true` and `publish_website=true` for the resolved company are ever returned — this cannot be overridden by any query parameter.
+
+**PII Exclusion:** Response fields deliberately exclude owner/agent info, internal notes, commission data, documents, exact street address, lat/long, and company details.
+
+**Error Responses:**
+- **400 Bad Request**: Invalid `status`, `ids`, `sort`, or `limit` value
+- **401 Unauthorized**: Missing or invalid JWT
+- **404 Not Found**: `company_slug` does not match any CMS Settings record
+- **500 Internal Server Error**: Unexpected error
+</field>
+            <field name="response_schema"><![CDATA[
+{
+  "type": "object",
+  "title": "PublicPropertyListResponse",
+  "properties": {
+    "company_slug": {"type": "string", "example": "minha-agencia"},
+    "count": {"type": "integer", "example": 2},
+    "limit": {"type": "integer", "example": 20},
+    "filters": {
+      "type": "object",
+      "properties": {
+        "status": {"type": "array", "items": {"type": "string"}, "nullable": true, "example": ["available"]},
+        "ids": {"type": "array", "items": {"type": "integer"}, "nullable": true},
+        "sort": {"type": "string", "example": "newest"}
+      }
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "title": "PublicPropertyResponse",
+        "properties": {
+          "id": {"type": "integer", "example": 42},
+          "reference_code": {"type": "string", "nullable": true, "example": "REF-042"},
+          "name": {"type": "string", "example": "Apartamento 2 quartos"},
+          "property_status": {"type": "string", "example": "available"},
+          "for_sale": {"type": "boolean", "example": true},
+          "for_rent": {"type": "boolean", "example": false},
+          "price": {"type": "number", "example": 300000.0},
+          "rent_price": {"type": "number", "example": 0.0},
+          "currency": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "id": {"type": "integer"},
+              "name": {"type": "string", "example": "BRL"},
+              "symbol": {"type": "string", "example": "R$"}
+            }
+          },
+          "area": {"type": "number", "example": 80.0},
+          "num_rooms": {"type": "integer", "example": 2},
+          "num_bathrooms": {"type": "integer", "example": 1},
+          "num_parking": {"type": "integer", "example": 1},
+          "city": {"type": "string", "example": "Sao Paulo"},
+          "neighborhood": {"type": "string", "example": "Bela Vista"},
+          "state": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "id": {"type": "integer"},
+              "name": {"type": "string", "example": "Sao Paulo"},
+              "code": {"type": "string", "example": "SP"}
+            }
+          },
+          "property_type": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "id": {"type": "integer"},
+              "name": {"type": "string", "example": "Apartamento"}
+            }
+          },
+          "image_url": {"type": "string", "nullable": true, "example": "/api/v1/public/properties/minha-agencia/42/image"},
+          "description_short": {"type": "string", "nullable": true},
+          "create_date": {"type": "string", "format": "date-time", "nullable": true}
+        }
+      }
+    },
+    "_links": {
+      "type": "object",
+      "properties": {
+        "self": {"type": "string", "example": "/api/v1/public/properties/minha-agencia?sort=newest&limit=20"}
+      }
+    }
+  }
+}
+]]></field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <record id="api_endpoint_cms_public_property_image" model="thedevkitchen.api.endpoint">
+            <field name="name">Get Public Property Image</field>
+            <field name="path">/api/v1/public/properties/{company_slug}/{property_id}/image</field>
+            <field name="method">GET</field>
+            <field name="module_name">thedevkitchen_cms</field>
+            <field name="protected" eval="False"/>
+            <field name="tags">CMS Public</field>
+            <field name="summary">Fetch a public property's main image by company slug and property id</field>
+            <field name="description">Public endpoint streaming the raw main-image bytes of a single published property. Content-Type is detected from the file's magic bytes (not client-supplied). Rendered inline (no `Content-Disposition: attachment` header) so it can be used directly as an `&lt;img src&gt;`.
+
+**Authentication:** JWT only (`Authorization: Bearer {access_token}`) — no session, no company header.
+
+**Path Parameters:**
+- `company_slug` (string): Unique slug configured in CMS Settings
+- `property_id` (integer): Property id
+
+**Visibility Gate (anti-enumeration):** The same `active=true` + `publish_website=true` gate as the list endpoint applies. An unpublished/inactive property returns 404 — identical to "property not found" and "property has no image" — so this endpoint cannot be used to enumerate or confirm the existence of non-public properties.
+
+**Error Responses:**
+- **401 Unauthorized**: Missing or invalid JWT
+- **404 Not Found**: `company_slug` unknown, property not found, property not public, or property has no image
+- **500 Internal Server Error**: Unexpected error
+</field>
+            <field name="active" eval="True"/>
+        </record>
+
     </data>
 </odoo>

@@ -21,7 +21,7 @@ Features:
 * Isolamento multi-tenancy por company_id
 * Observabilidade: eventos Loki + métricas Prometheus
 * Interface administrativa Odoo com views, filtros e statusbar
-* 19 endpoints REST documentados no Swagger (ADR-005)
+* 21 endpoints REST documentados no Swagger (ADR-005)
 * Postman collection (ADR-016)
 
 Technical:
